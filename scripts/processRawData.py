@@ -36,7 +36,7 @@ ld.keylist=channel_list
 for i_file in range(len(ld.file_list)):
 	print(f"Processing file #_{filerange_low+i_file}, {i_file+1}/{len(ld.file_list)}")
 	try:
-		res=ld.load_next_nfiles(1)
+		res = ld.load_next_nfiles(1)
 
 		tg = trigger(res, channel_config, trigger_channels, trigger_threshold_set, TTL_THRESHOLD=TTL_THRESHOLD, INRUN_RANDOM=INRUN_RANDOM,
 					 WINDOW_TEMPLATE=WINDOW_TEMPLATE, USE_GAUS_KERNEL=USE_GAUS_KERNEL,
