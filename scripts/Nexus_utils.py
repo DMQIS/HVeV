@@ -167,11 +167,11 @@ class loader:
 	def fileIO(self,filename,data_type):
 		if data_type == 'SLAC':
 			data = io.getRawEvents("",filename,channelList=self.keylist)["Z1"]
+		
 			# Convert to int16 to save RAM
 			# When doing processing, try to keep it as int16
 			self.data=dict()
 			for ch in data:
-				# invert, so pulses are positive-going
 				self.data[ch] = np.array([(-d+32768).astype(np.int16) for d in data[ch]])
 			event_idx = np.transpose(data.index.tolist())[1]%10000
 			event_info = io.getEventInfo('', filename)
@@ -367,7 +367,7 @@ class trigger:
 		self.verbose = verbose
 		self.use_ttl_falling_edge = use_ttl_falling_edge
 		self.remove_trigger_offset = remove_trigger_offset
-		if data_type is not None: # TODO hacky
+		if data_type is not None:
 			self.data_type = data_type
 		elif 'event_info' in data.keys():
 			self.event_info = data['event_info']
@@ -396,31 +396,33 @@ class trigger:
 		self.TTL_THRESHOLD = TTL_THRESHOLD
 		
 		# 1. Data processing
-		# Add additional trigger channels
+		# 1.1. Add additional trigger channels
 		self._add_channels(self.data, channel_config)
-		# Make filters
-		if filter_kernels is not None and not USE_GAUS_KERNEL:
-			if PSD is not None:
-				# basic OF
-				self.filter_kernels = self._make_filter_kernel_OF(filter_kernels,PSD,OF_LPF)
-			else:
-				# no PSD, so do MF
-				self.filter_kernels = filter_kernels
-				# normalize the kernel in the same way it is normalized for the gaussian filter
-				for i, ch in enumerate(self.trigger_channels):
-					if self.trigger_type[i] == 1 and ch != 'TTL':
-						self.filter_kernels[i] = filter_kernels[i]/np.max(np.correlate(filter_kernels[i],filter_kernels[i]))
-						self.filter_kernels[i] -= np.mean(self.filter_kernels[i])
-		else:
-			# Gaussian
+		# 1.2. Filtering
+		if filter_kernels is None or USE_GAUS_KERNEL:
 			self.filter_kernels = [self._make_filter_kernel(pre_trig_kernel, post_trig_kernel, USE_GAUS_KERNEL=USE_GAUS_KERNEL, gaus_sigma=gauss_sigma)\
 								   for i in range(len(self.trigger_channels))]
-			# Normalize kernels with templates, if templates are given
 			if filter_kernels is not None:
+				# Normalize gaus kernels with templates, if templates are given:
 				for i, ch in enumerate(self.trigger_channels):
-					if self.trigger_type[i] == 1 and ch != 'TTL':
+					if self.trigger_type[i]!=1 or ch=="TTL":
+						continue
+					else:
 						self.filter_kernels[i] = self.filter_kernels[i]/np.max(np.correlate(self.filter_kernels[i],filter_kernels[i]))
-		# Apply filters (only to channels with trigger_type==1)
+		else:
+			if PSD is None:
+				# this is the MF case, where we use the templates as the filter kernels.
+				# the next 4 lines are to normalize the kernel in the same way it is normalized for the gaussian filter
+				self.filter_kernels = filter_kernels
+				for i, ch in enumerate(self.trigger_channels):
+					if self.trigger_type[i]!=1 or ch=="TTL":
+						continue
+					self.filter_kernels[i] = filter_kernels[i]/np.max(np.correlate(filter_kernels[i],filter_kernels[i]))
+					self.filter_kernels[i] -= np.mean(self.filter_kernels[i])
+				
+			else:
+				self.filter_kernels = self._make_filter_kernel_OF(filter_kernels,PSD,OF_LPF)
+		# Although the function is called, channels that don't have trigger_type==1 will not be filtered.
 		self.data_filtered = self._apply_filter(self.data, self.trigger_channels, self.trigger_type, self.filter_kernels)
 		
 
@@ -626,8 +628,6 @@ class trigger:
 		return 0
 
 	def set_deactivation_threshold(self,trigger_channels,trigger_threshold=None):
-		# set lower than activation threshold to prevent fluctuations around
-		# threshold from triggering a bunch
 		if trigger_threshold is None:
 			self.deactivation_threshold = self.trigger_threshold
 			return
