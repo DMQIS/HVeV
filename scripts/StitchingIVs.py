@@ -41,7 +41,9 @@ def getibis(datadir, rns, det, verboseFlag):
     ibis = np.zeros((len(rns), 12, 2))
     for i in range(len(rns)):
         rn = rns[i]
-        fns = glob.glob(f'{datadir}RUN00{rn}*.gz')
+        # Format the run number to be five digits long with leading zeros
+        rn_str = f'{rn:05}'
+        fns = glob.glob(f'{datadir}RUN{rn_str}*.gz')
         myreader = cdms.rawio.IO.RawDataReader(filepath=fns, verbose=verboseFlag)
         events = myreader.read_events(output_format=1, skip_empty=True, phonon_adctoamps=True)
         series = events.index[0][0]
@@ -177,6 +179,8 @@ def find_significant_transition(vb, isig):
             print("Index out of bounds.")
             return -1, None
         transition_vb = vb[transition_index + 1]
+        if transition_vb == 0:
+            transition_vb = None
         return transition_index + 1, transition_vb
     
     # More than one significant transition to look at
@@ -194,6 +198,8 @@ def find_significant_transition(vb, isig):
         return -1, None
     
     transition_vb = vb[most_significant_index + 1]
+    
+    transition_vb *= A2uA
     
     # Return the index of the transition in vb
     return most_significant_index + 1, transition_vb
@@ -229,67 +235,63 @@ def linear_fit(x, m, c):
 def exponential_decay(x, a, b):
     return a * np.exp(-b * x)
 
-# Main function for stitching flux jumps, calls many helpers
-def JumpBuster(vb, isig):  # V6
+def estimate_decay_constant(vb, isig):
+    safe_isig = np.where(isig != 0, isig, 1e-12)  # Avoid division by zero
+    Y = safe_isig[-1] / safe_isig[0]
+    Range = vb[-1] - vb[0]
+    P = Y ** (1/ Range)
+    rate = 1 - P
+    return rate
+
+def shift_to_zero(vb, isig):
+    # Shift data such that the smallest value is at zero
+    isig -= np.min(isig)
+    return vb, isig
+
+def JumpBuster(vb, isig):
     sorted_indices = np.argsort(vb)  # Sort the arrays
     vb = vb[sorted_indices]
     isig = isig[sorted_indices]
 
-    # Calls function with SORTED vb array
-    vb_index, transition_vb = find_significant_transition(vb, isig)  # Find possible SC transition
+    vb_index, transition_vb = find_significant_transition(vb, isig)  # Implement your transition detection logic
 
-    if transition_vb is None:
-        # No superconducting transition found
-        isig_set = stitch_flux_jumps_by_threshold(vb, isig)
-        vb_set = vb
+    tolerance = 1e-8  # Define a small tolerance value
+
+    if transition_vb is None or np.isclose(transition_vb, 0, atol=tolerance):
+        # print("NO Superconducting transition found.")
+        isig = stitch_flux_jumps_by_threshold(vb, isig)
+        vb, isig = shift_to_zero(vb, isig)
+        return vb, isig
+    
     else:
-        # Split into SC and NM regimes
+        # print(f"Superconducting transition found at {transition_vb}")
         SC_vb = vb[:vb_index+1]
         SC_isig = isig[:vb_index+1]
 
-        # Shift everything down to (0,0)
+        # Shift to zero
         SC_vb -= SC_vb[0]
         SC_isig -= SC_isig[0]
-        
-        SC_isig = stitch_flux_jumps_by_threshold(SC_vb, SC_isig)
 
-        # Cut vb and isig to only normal regime
+        SC_isig = stitch_by_deriv(SC_vb, SC_isig)
+
         Nm_vb = vb[vb_index+1:]
         Nm_isig = isig[vb_index+1:]
 
-        # Fit an exponential decay to the data after the transition point
-        if len(Nm_vb) > 1:  # Ensure there is enough data to fit
-            try:
-                # Initial guess for exponential fit
-                initial_guess = [np.max(Nm_isig), 0.01]
+        Nm_isig = stitch_by_deriv(Nm_vb, Nm_isig)
 
-                # Fit exponential decay model
-                popt_exp, _ = curve_fit(exponential_decay, Nm_vb, Nm_isig, p0=initial_guess)
-                a, b = popt_exp
+        # Concatenate the SC and NM parts
+        vb_set = np.concatenate((SC_vb, Nm_vb))
+        isig_set = np.concatenate((SC_isig[1], Nm_isig[1]))
 
-                # Generate fitted exponential decay values
-                fitted_exponential = exponential_decay(Nm_vb, *popt_exp)
+    vb, isig = shift_to_zero(vb_set, isig_set)
+    
+    return vb, isig
 
-                # Adjust the NM data to fit the exponential decay
-                Nm_isig = fitted_exponential
-                Nm_isig = stitch_flux_jumps_by_threshold(Nm_vb, Nm_isig)
-
-
-            except (RuntimeError, OptimizeWarning) as e: # if cant be fit...
-                # print(f"Error fitting exponential decay: {e}")
-                Nm_isig = vb[vb_index+1:]
-                
-        
-        # Combine sections back together
-        vb_set = np.concatenate((SC_vb, Nm_vb), axis=0)
-        isig_set = np.concatenate((SC_isig, Nm_isig), axis=0)
-
-    return vb_set, isig_set
 
 STITCHING_METHODS = {"JumpBuster":JumpBuster, "none":none, "fancy":fancy_flux_fix, "threshold":stitch_flux_jumps_by_threshold,"intersect":stitch_flux_jump_by_intersect}
 
 # Main plotting function, can plot IV, RV, or PV plots
-def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type=""): #V4
+def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type=""):
     # Title/ Table Info
     runNumber = extract_runNumber(datadir)
     start = rns[0]
@@ -297,19 +299,46 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
     TES = []
     SC_VB = []
 
+    # Determine plot types
+    plot_types = plot_type.split('+')
+    num_plots = len(plot_types)
+    
+    # Create subplots
+    if num_plots == 1:
+        fig, ax = plt.subplots(figsize=(10, 6))  # Single subplot, adjust size as needed
+        axs = ax  # Use single Axes object
+    else:
+        fig, axs = plt.subplots(1, num_plots, figsize=(5*num_plots, 4), sharey=False)
+        axs = np.array(axs)  # Convert to array to ensure consistency in indexing
+
+
+    # Ensure axs is always treated correctly
+    if num_plots == 1:
+        axs = [axs]  # Wrap single Axes in a list for consistent handling
+
+    for ax in axs:
+        ax.axvline(x=0, color='black', linestyle='--')
+        ax.axhline(y=0, color='black', linestyle='--')
+    
     for tes in range(len(NAMES)):
-        if NAMES[tes] in include and NAMES[tes] not in exclude:
+        if NAMES[tes] in include:
             # Extract and convert vb and isig
             vb = ibis[:, tes, 0] * uA2A
             isig = ibis[:, tes, 1]
 
-            most_significant_index, transition_vb = find_significant_transition(vb, isig)
-            sc_transition_isig = vb[most_significant_index]
+            SC_trans_index, transition_vb = find_significant_transition(vb, isig)
+            sc_transition_isig = vb[SC_trans_index]
+            
+            if NAMES[tes] in exclude:
+                TES.append(NAMES[tes])
+                SC_VB.append("N/A")
+                continue  # Skip further processing for excluded TES
+            
             TES.append(NAMES[tes])
             
             trans = "N/A"
-            if transition_vb != None:
-                trans = transition_vb*A2uA
+            if transition_vb is not None:
+                trans = transition_vb
                 trans = float(trans)  # Convert to float
                 if trans == 0.00:
                     SC_VB.append("N/A")
@@ -319,60 +348,70 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
                 SC_VB.append(trans)
         
             if np.all(vb == 0): # Check if data is logical, if not, skip
-                # print(f"Warning: 'vb' array is composed entirely of zeroes for {NAMES[tes]}.")
                 continue
             
             # Apply the stitching method if necessary
             if stitch_type in STITCHING_METHODS:
                 if stitch_type != "none":
                     vb, isig = STITCHING_METHODS[stitch_type](vb, isig)
-            # Plotting based on the 
-            if plot_type == "iv":
-                plt.plot(vb * A2uA, isig * A2uA, '.', color=cs[tes], label=NAMES[tes])
-                plt.ylabel(r'Measured TES branch current ($\mu$A)')
-                #plt.axvline(SC_trans, color='r', linestyle='--', label=f"SC Transition for {tes}")
-            elif plot_type == "rv":
-                rp = np.mean(vb[-SUPERCONDUCTING_RANGE:-1] / isig[-SUPERCONDUCTING_RANGE:-1])
-                print("rp = " + str(rp))
-                r = vb / isig - rp
-                plt.plot(vb[:-1] * V2nV, r[:-1], '.', color=cs[tes], label=NAMES[tes])
-                plt.ylabel(r'R($\Omega$)')
-            elif plot_type == "pv":
-                mask = (vb < 1400 / V2nV)
-                rp = np.mean(vb[-SUPERCONDUCTING_RANGE:-1] / isig[-SUPERCONDUCTING_RANGE:-1])
-                print("rp = " + str(rp))
-                r = vb / isig - rp
-                plt.plot(vb[mask] * A2, isig[mask]**2 * r[mask] * W2pW, '.', color=cs[tes], label=NAMES[tes])
-                plt.ylabel(r'P (pW)')
-        else: 
-            # Extract and convert vb and isig
-            vb = ibis[:, tes, 0] * uA2A
-            isig = ibis[:, tes, 1]
+            else:
+                print("Not a valid stitching method.")
+            
+            # Plotting based on plot_type
+            for i, ptype in enumerate(plot_types):
+                ax = axs[i]
 
-            most_significant_index, transition_vb = find_significant_transition(vb, isig)
-            sc_transition_isig = vb[most_significant_index]
+                if ptype == "iv":
+                    ax.plot(vb * A2uA, isig * A2uA, '.', color=cs[tes], label=NAMES[tes])
+                    ax.set_ylabel(r'Measured TES branch current ($\mu$A)')
+                    ax.set_xlabel(r'TES bias (nV)')            
+                
+                elif ptype == "rv":
+                    safe_isig = np.where(isig != 0, isig, 1e-12)
+                    rp = np.mean(vb[0:SC_trans_index] / safe_isig[0:SC_trans_index])
+                    r = (vb / safe_isig) - rp
+                    ax.plot(vb[:-1] * A2uA, r[:-1], '.', color=cs[tes], label=NAMES[tes])
+                    ax.set_ylabel(r'R($\Omega$)')
+                    ax.set_xlabel(r'TES bias (nV)')
+                    ax.set_xlim(vb.min() * A2uA, vb.max() * A2uA)
+                    ax.set_ylim(r.min(), r.max())
+                
+                elif ptype == "pv":
+                    safe_isig = np.where(isig != 0, isig, 1e-12)
+                    mask = (vb < 1400 / V2nV)
+                    
+                    if np.any(mask):  # Check if mask has selected any data
+                        rp = np.mean(vb[0:SC_trans_index] / safe_isig[0:SC_trans_index])
+                        r = (vb / safe_isig) - rp
+                        power = isig[mask]**2 * r[mask] * W2pW
+                        ax.plot(vb[mask] * A2uA, power, '.', color=cs[tes], label=NAMES[tes])
+                        ax.set_ylabel(r'P (pW)')
+                        ax.set_xlabel(r'TES bias (nV)')
+                        ax.set_xlim(vb.min() * A2uA, vb.max() * A2uA)
+                        ax.set_ylim(0, np.max(power))  # Avoid setting identical limits
+                    else:
+                        ax.set_xlim(0, 1)  # Default limits if no data
+                        ax.set_ylim(0, 1)
+                        
+        else: 
+            # Handle cases where TES is in exclude list
             TES.append(NAMES[tes])
             SC_VB.append("N/A")
 
-    TES.append("Stitch Type")
-    SC_VB.append(stitch_type)
-    
-    table_data = []
-    for i in range(len(TES)):
-        table_data.append([TES[i], SC_VB[i]])
+    if "iv" in plot_types:
+        iv_ax = axs[plot_types.index("iv")]
+        # ax.set_xlim(vb.min() * A2uA, vb.max() * A2uA)
+        # ax.set_ylim(isig.min(), isig.max())
+        TES.append("Stitch Type")
+        SC_VB.append(stitch_type)
+                
+        table_data = []
+        for i in range(len(TES)):
+            table_data.append([TES[i], SC_VB[i]])
+            
+        iv_ax.table(cellText=table_data, colLabels=['TES', 'Transition (V)'], cellLoc='center', loc='center', bbox=[1, 0, .6, 1])  # (x, y, width, height)
+        iv_ax.legend(ncol=1, loc='upper right')
 
-    plt.table(cellText=table_data,
-          colLabels=['TES', 'Transition (V)'],
-          cellLoc='center',
-          loc='center',
-          bbox=[1, 0, .6, 1])  # (x, y, width, height)
-
-    plt.title(f"{runNumber}: Runs {start}-{end}")
-    plt.xlabel(r'TES bias (nV)')
-    plt.ylim(0, 25)
-    plt.xlim(0, 350)
-    plt.axvline(x=0, color='black', linestyle='--')
-    plt.axhline(y=0, color='black', linestyle='--')
-    plt.axvline(x=sc_transition_isig, color='black', linestyle='--')
-    plt.legend(ncol=1, loc='upper right')
+    plt.suptitle(f"{runNumber}: Runs {start}-{end}")
+    plt.tight_layout(rect=[0, .01, 1, 0.99])  # Adjust to fit title and labels
     plt.show()
