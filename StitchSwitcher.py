@@ -1,3 +1,6 @@
+# This file contains many methods for stitching IV curves that are accessed through the stitch_type parameter in the plot sweep function. Not all functions are 100% working/ rigorously tested.
+# Authors: Giana, Aviv, Jamie
+
 # Imports
 import numpy as np
 import matplotlib.pyplot as plt
