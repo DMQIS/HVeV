@@ -1,6 +1,3 @@
-# File contains one method to stitch IV curves, employed by using derivative constraints, SC transition detection, and linearization. 
-# Author Giana
-
 # Imports
 import numpy as np
 import matplotlib.pyplot as plt
@@ -32,6 +29,21 @@ EPSILON = 1e-15
 # MIDAS channel, names, and colors
 chs = ['PBS1', 'PAS1', 'PCS1', 'PFS1', 'PDS1', 'PES1', 'PBS2', 'PFS2', 'PES2', 'PAS2', 'PDS2', 'PCS2']
 # cs = ['#00ff00', '#ffcc00', '#ff00ff', '#ff0000', '#0000ff', '#00ffff', '#008000', '#808000', '#993300', '#800080', '#3366ff', '#ff9900']
+cs = [
+    "#4A90E2",  # Sky Blue
+    "#50E3C2",  # Mint Green
+    "#B8E986",  # Light Green
+    "#F5A623",  # Golden Orange
+    "#D0021B",  # Bright Red
+    "#7B92A5",  # Steel Blue
+    "#BD10E0",  # Bright Purple
+    "#F8E71C",  # Bright Yellow
+    "#D1D8E0",  # Light Gray
+    "#9B9B9B",  # Medium Gray
+    "#F4A7B9",  # Soft Pink
+    "#E94F77"   # Reddish Pink
+]
+
 NAMES = ['NW A', 'NW B', 'TAMU A', 'TAMU B', 'SiC squares A', 'SiC squares B', 'SiC NFH A', 'SiC NFH B', 'SiC NFC1 A', 'SiC NFC1 B', 'SiC NFC2 A', 'SiC NFC2 B']
 det = 1 
 
@@ -148,19 +160,22 @@ def stitch_by_diffs(vb, isig, threshold=0.1):
     return vb, isig_stitched
 
 
-def find_SC_transition(vb, isig):
+def find_SC_transition(vb, isig, A2uA=1.0):
     if len(isig) < 3:
         return -1, None  # Not enough data for derivative analysis
 
     dvb = np.diff(vb)
     disig = np.diff(isig)
     
-    first_derivative = np.where(dvb != 0, disig / dvb, 0)
+    # First derivative, skipping division by zero
+    with np.errstate(divide='ignore', invalid='ignore'):
+        first_derivative = np.divide(disig, dvb, out=np.zeros_like(disig), where=np.abs(dvb) > 0)
     
-    dvb = np.diff(vb[:-1])  # Note: Adjust length to match first_derivative
+    # Second derivative, skipping division by zero
     dfirst_derivative = np.diff(first_derivative)
-    
-    second_derivative = np.where(dvb != 0, dfirst_derivative / dvb, 0)
+    dvb2 = np.diff(vb[:-1])  # Adjust length to match first_derivative
+    with np.errstate(divide='ignore', invalid='ignore'):
+        second_derivative = np.divide(dfirst_derivative, dvb2, out=np.zeros_like(dfirst_derivative), where=np.abs(dvb2) > 0)
 
     # Identify points where the second derivative transitions from positive to negative
     transition_indices = []
@@ -172,7 +187,6 @@ def find_SC_transition(vb, isig):
         return -1, None  # No significant transition found
     
     # Determine the most significant transition based on the magnitude of the second derivative
-    # Here, choose the transition with the largest magnitude of the second derivative
     magnitudes = np.abs(second_derivative[transition_indices])
     most_significant_index = transition_indices[np.argmax(magnitudes)]
     
@@ -187,6 +201,8 @@ def find_SC_transition(vb, isig):
     
     return most_significant_index + 1, transition_vb * A2uA
 
+
+
 def JumpBuster(vb, isig): 
     sorted_indices = np.argsort(vb)  # Sort the arrays
     vb = vb[sorted_indices]
@@ -200,17 +216,18 @@ def JumpBuster(vb, isig):
     if transition_vb != None and vb_index != 0: # Found the transition
         sc_vb = vb[:vb_index+1] 
         sc_isig = isig[:vb_index+1]
-        sc_vb, sc_isig = stitch_by_diffs(sc_vb, sc_isig)
 
         nm_vb = vb[vb_index+1:]
         nm_isig = isig[vb_index+1:]
 
-        nm_vb, nm_isig = shift_to_zero(nm_vb, nm_isig)
+        if nm_isig[-1] != 0 or nm_isig[-1] < 1e-1:
+            nm_vb, nm_isig = shift_to_zero(nm_vb, nm_isig)
 
         vb = np.concatenate((sc_vb, nm_vb), axis=0)
         isig = np.concatenate((sc_isig, nm_isig), axis=0)
     else:
         vb, isig = stitch_by_diffs(vb, isig)
+        print("fart")
         
     return vb, isig
 
@@ -252,9 +269,6 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
             vb = ibis[:, tes, 0] * uA2A
             isig = ibis[:, tes, 1]
 
-            if np.all(vb == 0): # Check if data is logical, if not, skip
-                continue
-
             SC_trans_index, transition_vb = find_SC_transition(vb, isig)
             sc_transition_isig = vb[SC_trans_index]
             
@@ -275,7 +289,10 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
                     SC_VB.append(f"{trans:.2f}")
             else:
                 SC_VB.append(trans)
-
+        
+            if np.all(vb == 0): # Check if data is logical, if not, skip
+                
+                continue
             
             # Apply the stitching method if necessary
             if stitch_type in STITCHING_METHODS:
@@ -294,14 +311,27 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
                     ax.set_xlabel(r'TES bias (nV)')            
                 
                 elif ptype == "rv":
-                    safe_isig = np.where(isig != 0, isig, 1e-12)
+                    safe_isig = np.where(isig != 0, isig, 1e-16)
                     rp = np.mean(vb[0:SC_trans_index] / safe_isig[0:SC_trans_index])
                     r = (vb / safe_isig) - rp
-                    ax.plot(vb[:-1] * A2uA, r[:-1], '.', color=cs[tes], label=NAMES[tes])
+                    ax.plot(vb[:-1] * A2uA, -r[:-1], '.', color=cs[tes], label=NAMES[tes])
                     ax.set_ylabel(r'R($\Omega$)')
                     ax.set_xlabel(r'TES bias (nV)')
-                    ax.set_xlim(vb.min() * A2uA, vb.max() * A2uA)
-                    ax.set_ylim(r.min(), r.max())
+                    x_min = vb.min() * A2uA
+                    x_max = vb.max() * A2uA
+                    if x_min == x_max:
+                        x_min -= 1e-9  # Small buffer
+                        x_max += 1e-9
+                    
+                    y_min = r.min()
+                    y_max = r.max()
+                    if y_min == y_max:
+                        y_min -= 1e-9  # Small buffer
+                        y_max += 1e-9
+                    
+                    ax.set_xlim(x_min, x_max)
+                    ax.set_ylim(y_min, y_max)
+                    ax.legend(ncol=1, loc='lower left')
                 
                 elif ptype == "pv":
                     safe_isig = np.where(isig != 0, isig, 1e-12)
@@ -340,18 +370,3 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
     plt.suptitle(f"{runNumber}: Runs {start}-{end}")
     plt.tight_layout(rect=[0, .01, 1, 0.99])  # Adjust to fit title and labels
     plt.show()
-
-cs = [
-    "#4A90E2",  # Sky Blue
-    "#50E3C2",  # Mint Green
-    "#B8E986",  # Light Green
-    "#F5A623",  # Golden Orange
-    "#D0021B",  # Bright Red
-    "#7B92A5",  # Steel Blue
-    "#BD10E0",  # Bright Purple
-    "#F8E71C",  # Bright Yellow
-    "#D1D8E0",  # Light Gray
-    "#9B9B9B",  # Medium Gray
-    "#F4A7B9",  # Soft Pink
-    "#E94F77"   # Reddish Pink
-]
