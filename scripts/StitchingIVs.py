@@ -153,7 +153,7 @@ def fancy_flux_fix(vb,isig): #isig is current signal
         isig_stitched[flux_jump[0]+1:] = isig_stitched[flux_jump[0]+1:] - flux_jump[1] #see what I can do here, want linear type fit
     return stitch_flux_jump_by_intersect(vb,isig_stitched)
 
-# Finds SC transition
+# Finds most significant transition
 def find_significant_transition(vb, isig): 
     # Data is sorted by increasing vb
     if len(isig) < 3:
@@ -204,28 +204,116 @@ def find_significant_transition(vb, isig):
     # Return the index of the transition in vb
     return most_significant_index + 1, transition_vb
 
-# Stitch flux jumps by looking at slope differences
-def stitch_by_deriv(vb, isig):
 
-# Calculate the first derivative
-    first_derivative = np.diff(isig)
+def find_SC_transition(vb, isig):
+    if len(isig) < 3:
+        return -1, None  # Not enough data for derivative analysis
+
+    dvb = np.diff(vb)
+    disig = np.diff(isig)
+    
+    first_derivative = np.where(dvb != 0, disig / dvb, 0)
+    
+    dvb = np.diff(vb[:-1])  # Note: Adjust length to match first_derivative
+    dfirst_derivative = np.diff(first_derivative)
+    
+    second_derivative = np.where(dvb != 0, dfirst_derivative / dvb, 0)
+
+    # Identify points where the second derivative transitions from positive to negative
+    transition_indices = []
+    for i in range(1, len(second_derivative)):
+        if second_derivative[i] < 0 and second_derivative[i - 1] >= 0:
+            transition_indices.append(i)
+
+    if not transition_indices:
+        return -1, None  # No significant transition found
+    
+    # Determine the most significant transition based on the magnitude of the second derivative
+    # Here, choose the transition with the largest magnitude of the second derivative
+    magnitudes = np.abs(second_derivative[transition_indices])
+    most_significant_index = transition_indices[np.argmax(magnitudes)]
+    
+    # Ensure index is within bounds
+    if most_significant_index + 1 >= len(vb):
+        return -1, None
+    
+    transition_vb = vb[most_significant_index + 1]
+    
+    if transition_vb == 0:
+        return -1, None
+    
+    return most_significant_index + 1, transition_vb * A2uA
+
+
+def stitch_by_deriv(vb, isig):
+    # Calculate differences
+    dvb = np.diff(vb)
+    disig = np.diff(isig)
+    
+    # Calculate first derivative with safe division
+    first_derivative = np.where(dvb != 0, disig / dvb, 0)
     
     # Identify significant changes in the first derivative
+    # Find zero crossings in the first derivative
     zero_crossings = np.where(np.diff(np.sign(first_derivative)))[0]
     
     if len(zero_crossings) == 0:
-        # print("No significant changes in derivative found.")
-        return vb, isig
+        return vb, isig  # No significant changes found, return original
 
-    # Apply corrections at significant derivative changes
     isig_stitched = isig.copy()
     
     for zero_crossing in zero_crossings:
         flux_jump_index = zero_crossing + 1  # Shift by 1 due to np.diff reducing length by 1
         if flux_jump_index < len(isig_stitched):
-            jump_value = first_derivative[zero_crossing]  # Use derivative magnitude to adjust
-            isig_stitched[flux_jump_index:] -= jump_value  # Correct for the flux jump
+            # Calculate the jump value based on the difference in the derivative
+            jump_value = first_derivative[zero_crossing] if zero_crossing < len(first_derivative) else 0
+            
+            # Correct the flux jump in the `isig` data
+            isig_stitched[flux_jump_index:] -= jump_value
+            
     return vb, isig_stitched
+
+def stitch_by_diffs(vb, isig, threshold=0.1):
+    # Calculate differences between consecutive points
+    dvb = np.diff(vb)
+    disig = np.diff(isig)
+    
+    # Calculate differences in disig to find constant differences
+    diff_disig = np.diff(disig)
+    
+    # Identify significant changes where difference exceeds the threshold
+    significant_changes = np.where(np.abs(diff_disig) > threshold)[0]
+    
+    if len(significant_changes) == 0:
+        return vb, isig  # No significant changes found, return original
+    
+    isig_stitched = isig.copy()
+    
+    for change_index in significant_changes:
+        # Determine the index in the original data array
+        adjustment_index = change_index + 1
+        
+        if adjustment_index < len(isig_stitched):
+            # Calculate the amount to adjust based on the significant change
+            adjustment_value = disig[adjustment_index]
+            
+            # Adjust all subsequent points by the identified amount
+            isig_stitched[adjustment_index:] -= adjustment_value
+            
+    return vb, isig_stitched
+
+def shift_to_zero(vb, isig):
+    # Shift data such that the smallest value is at zero
+    isig -= np.min(isig)
+    return vb, isig
+
+def stitch_by_intersect(vb, isig):
+    vb -= vb[0]
+    isig -= isig[0]
+
+    vb, isig = stitch_by_deriv(vb, isig)
+    
+    return vb, isig
     
 # Helper function
 def linear_fit(x, m, c):
@@ -276,58 +364,29 @@ def apply_shift_if_needed(vb, isig, transition, threshold=0.65, tolerance=1e-8):
     
     return vb, isig
 
-def JumpBuster(vb, isig):
+def JumpBuster(vb, isig): 
     sorted_indices = np.argsort(vb)  # Sort the arrays
     vb = vb[sorted_indices]
     isig = isig[sorted_indices]
 
-    vb_index, transition_vb = find_significant_transition(vb, isig)  # Implement your transition detection logic
+    vb -= vb[0]
+    isig -= isig[0]
 
-    tolerance = 1e-8  # Define a small tolerance value
+    vb_index, transition_vb = find_SC_transition(vb, isig)  # Implement your transition detection logic
 
-    if transition_vb is None or np.isclose(transition_vb, 0, atol=tolerance):
-        # print("NO Superconducting transition found.")
-        isig = stitch_flux_jumps_by_threshold(vb, isig)
-        vb, isig = shift_to_zero(vb, isig)
-        return vb, isig
-    
+    if transition_vb != None and vb_index != 0: # Found the transition
+        sc_vb = vb[:vb_index+1] 
+        sc_isig = isig[:vb_index+1]
 
-    # print(f"Superconducting transition found at {transition_vb}")
-    SC_vb = vb[:vb_index+1]
-    SC_isig = isig[:vb_index+1]
+        nm_vb = vb[vb_index+1:]
+        nm_isig = isig[vb_index+1:]
 
-    # Shift to zero
-        
-    SC_vb -= SC_vb[0]
-    SC_isig -= SC_isig[0]
+        nm_vb, nm_isig = shift_to_zero(nm_vb, nm_isig)
 
-
-    if not np.isclose(SC_isig[0], 0, atol=tolerance):
-        # print("Shift to intercept")
-        SC_vb, SC_isig = stitch_jump_by_intersect(SC_vb, SC_isig)
-
-    SC_isig = stitch_by_deriv(SC_vb, SC_isig)
-    # SC_vb, SC_isig = shift_to_zero(SC_vb, SC_isig)
-
-    Nm_vb = vb[vb_index+1:]
-    Nm_isig = isig[vb_index+1:]
-
-    # Nm_isig = stitch_by_deriv(Nm_vb, Nm_isig)
-
-     # Concatenate the SC and NM parts
-    vb_set = np.concatenate((SC_vb, Nm_vb))
-    isig_set = np.concatenate((SC_isig[1], Nm_isig))
-
-
-    tol = tolerance
-    if isig_set[-1] > 0 and isig_set[-1] > -5:
-        tol = 10
-
-    
-    if not np.isclose(isig_set[-1], 0, atol=tol):
-        # print("FART")        
-        vb, isig = apply_shift_if_needed(vb_set, isig_set, vb_index)
-
+        vb = np.concatenate((sc_vb, nm_vb), axis=0)
+        isig = np.concatenate((sc_isig, nm_isig), axis=0)
+    else:
+        vb, isig = stitch_by_diffs(vb, isig)
         
     return vb, isig
 
