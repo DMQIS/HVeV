@@ -142,7 +142,7 @@ def fancy_flux_fix(vb,isig): #isig is current signal
     diffs = np.diff(isig) #finds the differences between consecutive elements in isig
     outliers = find_two_sigma_outliers(diffs) # find most likely jumps by looking at the largest differences
     transition_index = find_least_similar_element(outliers) #finds transition 
-    print(transition_index)
+    # print(transition_index)
     flux_jumps = outliers.copy()
     if transition_index == 0:
         print("No superconducting transition found for {vb}")
@@ -181,7 +181,7 @@ def find_significant_transition(vb, isig):
         transition_vb = vb[transition_index + 1]
         if transition_vb == 0:
             transition_vb = None
-        return transition_index + 1, transition_vb
+        return transition_index + 1, transition_vb * A2uA
     
     # More than one significant transition to look at
     magnitudes = np.abs(np.diff(first_derivative[zero_crossings]))
@@ -248,6 +248,34 @@ def shift_to_zero(vb, isig):
     isig -= np.min(isig)
     return vb, isig
 
+def apply_shift_if_needed(vb, isig, transition, threshold=0.65, tolerance=1e-8):
+    # Calculate the proportion of negative values in isig
+    negative_count = np.sum(isig < 0)
+    total_count = len(isig)
+    
+    if total_count == 0:
+        raise ValueError("The isig array is empty")
+    
+    proportion_negative = negative_count / total_count
+    
+    # print(f"Proportion of negative values in isig: {proportion_negative:.2f}")
+    
+    # Apply shift if the proportion of negative values exceeds the threshold
+    if proportion_negative > threshold:
+        # print("Applying shift to zero")
+        vb, isig = shift_to_zero(vb, isig)
+    
+    # Apply shift to intercept if necessary
+    if not np.isclose(isig[0], 0, atol=tolerance):
+        # print("Applying shift to intercept")
+        SC_isig = isig[:transition + 1]
+        NM_isig = isig[transition + 1:]
+        SC_isig -= SC_isig[0]
+
+        isig = np.concatenate((SC_isig, NM_isig), axis=0)
+    
+    return vb, isig
+
 def JumpBuster(vb, isig):
     sorted_indices = np.argsort(vb)  # Sort the arrays
     vb = vb[sorted_indices]
@@ -263,28 +291,44 @@ def JumpBuster(vb, isig):
         vb, isig = shift_to_zero(vb, isig)
         return vb, isig
     
-    else:
-        # print(f"Superconducting transition found at {transition_vb}")
-        SC_vb = vb[:vb_index+1]
-        SC_isig = isig[:vb_index+1]
 
-        # Shift to zero
-        SC_vb -= SC_vb[0]
-        SC_isig -= SC_isig[0]
+    # print(f"Superconducting transition found at {transition_vb}")
+    SC_vb = vb[:vb_index+1]
+    SC_isig = isig[:vb_index+1]
 
-        SC_isig = stitch_by_deriv(SC_vb, SC_isig)
+    # Shift to zero
+        
+    SC_vb -= SC_vb[0]
+    SC_isig -= SC_isig[0]
 
-        Nm_vb = vb[vb_index+1:]
-        Nm_isig = isig[vb_index+1:]
 
-        Nm_isig = stitch_by_deriv(Nm_vb, Nm_isig)
+    if not np.isclose(SC_isig[0], 0, atol=tolerance):
+        # print("Shift to intercept")
+        SC_vb, SC_isig = stitch_jump_by_intersect(SC_vb, SC_isig)
 
-        # Concatenate the SC and NM parts
-        vb_set = np.concatenate((SC_vb, Nm_vb))
-        isig_set = np.concatenate((SC_isig[1], Nm_isig[1]))
+    SC_isig = stitch_by_deriv(SC_vb, SC_isig)
+    # SC_vb, SC_isig = shift_to_zero(SC_vb, SC_isig)
 
-    vb, isig = shift_to_zero(vb_set, isig_set)
+    Nm_vb = vb[vb_index+1:]
+    Nm_isig = isig[vb_index+1:]
+
+    # Nm_isig = stitch_by_deriv(Nm_vb, Nm_isig)
+
+     # Concatenate the SC and NM parts
+    vb_set = np.concatenate((SC_vb, Nm_vb))
+    isig_set = np.concatenate((SC_isig[1], Nm_isig))
+
+
+    tol = tolerance
+    if isig_set[-1] > 0 and isig_set[-1] > -5:
+        tol = 10
+
     
+    if not np.isclose(isig_set[-1], 0, atol=tol):
+        # print("FART")        
+        vb, isig = apply_shift_if_needed(vb_set, isig_set, vb_index)
+
+        
     return vb, isig
 
 
