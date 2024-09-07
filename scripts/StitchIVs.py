@@ -108,6 +108,11 @@ def stitch_by_diffs(vb,isig):
         isig_stitched[flux_jump[0]+1:] = isig_stitched[flux_jump[0]+1:] - flux_jump[1] 
     return vb, isig_stitched
 
+def detect_outliers_std(data, threshold=3):
+    mean = np.mean(data)
+    std_dev = np.std(data)
+    outliers = [x for x in data if abs(x - mean) > threshold * std_dev]
+    return outliers
 
 def find_SC_transition(vb, isig, A2uA=1.0):
     if len(isig) < 3:
@@ -149,7 +154,11 @@ def find_SC_transition(vb, isig, A2uA=1.0):
         return -1, None
 
     transition_vb *= 1e6
-    
+
+    # vb, isig = JumpBuster(vb, isig)
+    # if all(x == 0 for x in isig):
+    #     return -1, None
+        
     return most_significant_index + 1, transition_vb
 
 def JumpBuster(vb, isig): 
@@ -161,15 +170,16 @@ def JumpBuster(vb, isig):
     isig -= isig[0]
 
     vb_index, transition_vb = find_SC_transition(vb, isig)  # Implement your transition detection logic
+    outliers = detect_outliers_std(isig)
+
+    if isig[1] < 0 or isig[2] < 0:
+        vb, isig = stitch_by_diffs(vb, isig)
 
     if transition_vb != None and vb_index != 0: # Found the transition
         sc_vb = vb[:vb_index+1] 
         sc_isig = isig[:vb_index+1]
 
         sc_vb, sc_isig = stitch_by_diffs(sc_vb, sc_isig)
-
-        if sc_isig[0] != 0:
-            sc_isig -= sc_isig[0]
 
         nm_vb = vb[vb_index+1:]
         nm_isig = isig[vb_index+1:]
@@ -180,10 +190,19 @@ def JumpBuster(vb, isig):
         vb = np.concatenate((sc_vb, nm_vb), axis=0)
         isig = np.concatenate((sc_isig, nm_isig), axis=0)
 
-    
     else: # Transition not found
+        vb -= vb[0]
+        isig -= isig[0]
         vb, isig = stitch_by_diffs(vb, isig)
         return vb, isig
+
+    isig_list = isig.tolist()
+    outliers_set = set(outliers)
+
+    # Filter out the outliers from isig and vb
+    filtered_indices = [i for i in range(len(isig)) if isig[i] not in outliers_set]
+    vb = vb[filtered_indices]
+    isig = isig[filtered_indices]
         
     return vb, isig
 
@@ -206,8 +225,6 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
     if num_plots == 1:
         fig, ax = plt.subplots(figsize=(8, 6)) 
         axs = ax 
-        # plt.tight_layout(rect=[0, .99, 1, 0.01]) 
-        # plt.subplots_adjust(wspace=0, hspace=0)
     else:
         fig, axs = plt.subplots(1, num_plots, figsize=(5*num_plots, 4), sharey=False)
         axs = np.array(axs)  
@@ -224,6 +241,9 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
             # Extract and convert vb and isig
             vb = ibis[:, tes, 0] * uA2A
             isig = ibis[:, tes, 1]
+
+            if np.all(vb == 0) or np.all(isig==0): # Check if data is logical, if not, skip
+                continue
 
             SC_trans_index, transition_vb = find_SC_transition(vb, isig)
             sc_transition_isig = vb[SC_trans_index]
@@ -245,9 +265,6 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
                     SC_VB.append(f"{trans:.2f}")
             else:
                 SC_VB.append(trans)
-        
-            if np.all(vb == 0): # Check if data is logical, if not, skip
-                continue
             
             # Apply the stitching method if necessary
             if stitch_type in STITCHING_METHODS:
@@ -261,6 +278,9 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
                 ax = axs[i]
 
                 if ptype == "iv":
+                    if np.all(isig == 0): # Check if data is logical, if not, skip
+                        SC_VB.pop()
+                        SC_VB.append("N/A")
                     ax.plot(vb * A2uA, isig * A2uA, '.', color=cs[tes], label=NAMES[tes])
                     ax.set_ylabel(r'Measured TES branch current ($\mu$A)')
                     ax.set_xlabel(r'TES bias (nV)')  
@@ -317,7 +337,7 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
             table_data.append([TES[i], SC_VB[i]])
             
         # Add the table with colored text
-        table = iv_ax.table(cellText=table_data, colLabels=['TES', 'Transition (V)'], cellLoc='center', loc='center', bbox=[-1, 0, .6, 1])
+        table = iv_ax.table(cellText=table_data, colLabels=['TES', 'Transition (nV)'], cellLoc='center', loc='center', bbox=[-1, 0, .6, 1])
         
         # Apply color to table font
         for i, key in enumerate(TES):
