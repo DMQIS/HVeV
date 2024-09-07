@@ -315,7 +315,7 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
         table_data.append([TES[i], SC_VB[i]])
 
     # Add the table to the first axis
-    axs[0].table(cellText=table_data, colLabels=['TES', 'Transition (V)'], cellLoc='center', loc='center', bbox=[-1, 0, .6, 1])
+    axs[0].table(cellText=table_data, colLabels=['TES', 'Transition (nV)'], cellLoc='center', loc='center', bbox=[-1, 0, .6, 1])
     
     # Color the table cells based on TES colors
     for i, key in enumerate(TES):
