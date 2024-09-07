@@ -29,21 +29,7 @@ EPSILON = 1e-15
 
 # MIDAS channel, names, and colors
 chs = ['PBS1', 'PAS1', 'PCS1', 'PFS1', 'PDS1', 'PES1', 'PBS2', 'PFS2', 'PES2', 'PAS2', 'PDS2', 'PCS2']
-cs = [
-    "#4A90E2",  # Sky Blue
-    "#50E3C2",  # Mint Green
-    "#B8E986",  # Light Green
-    "#F5A623",  # Golden Orange
-    "#D0021B",  # Bright Red
-    "#7B92A5",  # Steel Blue
-    "#BD10E0",  # Bright Purple
-    "#F8E71C",  # Bright Yellow
-    "#D1D8E0",  # Light Gray
-    "#9B9B9B",  # Medium Gray
-    "#F4A7B9",  # Soft Pink
-    "#E94F77"   # Reddish Pink
-]
-
+cs = ["#4A90E2", "#50E3C2", "#B8E986", "#F5A623", "#D0021B",  "#7B92A5", "#BD10E0", "#F8E71C", "#D1D8E0","#9B9B9B","#F4A7B9", "#E94F77"]
 NAMES = ['NW A', 'NW B', 'TAMU A', 'TAMU B', 'SiC squares A', 'SiC squares B', 'SiC NFH A', 'SiC NFH B', 'SiC NFC1 A', 'SiC NFC1 B', 'SiC NFC2 A', 'SiC NFC2 B']
 det = 1 
 
@@ -121,17 +107,14 @@ def find_SC_transition(vb, isig, A2uA=1.0):
     dvb = np.diff(vb)
     disig = np.diff(isig)
     
-    # First derivative, skipping division by zero
     with np.errstate(divide='ignore', invalid='ignore'):
         first_derivative = np.divide(disig, dvb, out=np.zeros_like(disig), where=np.abs(dvb) > 0)
     
-    # Second derivative, skipping division by zero
     dfirst_derivative = np.diff(first_derivative)
     dvb2 = np.diff(vb[:-1])  # Adjust length to match first_derivative
     with np.errstate(divide='ignore', invalid='ignore'):
         second_derivative = np.divide(dfirst_derivative, dvb2, out=np.zeros_like(dfirst_derivative), where=np.abs(dvb2) > 0)
 
-    # Identify points where the second derivative transitions from positive to negative
     transition_indices = []
     for i in range(1, len(second_derivative)):
         if second_derivative[i] < 0 and second_derivative[i - 1] >= 0:
@@ -144,7 +127,6 @@ def find_SC_transition(vb, isig, A2uA=1.0):
     magnitudes = np.abs(second_derivative[transition_indices])
     most_significant_index = transition_indices[np.argmax(magnitudes)]
     
-    # Ensure index is within bounds
     if most_significant_index + 1 >= len(vb):
         return -1, None
     
@@ -154,10 +136,6 @@ def find_SC_transition(vb, isig, A2uA=1.0):
         return -1, None
 
     transition_vb *= 1e6
-
-    # vb, isig = JumpBuster(vb, isig)
-    # if all(x == 0 for x in isig):
-    #     return -1, None
         
     return most_significant_index + 1, transition_vb
 
@@ -272,15 +250,16 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
                     vb, isig = STITCHING_METHODS[stitch_type](vb, isig)
             else:
                 print("Not a valid stitching method.")
+
+            if np.all(isig == 0): # Check if data is logical, if not, skip
+                SC_VB.pop()
+                SC_VB.append("N/A")
             
             # Plotting based on plot_type
             for i, ptype in enumerate(plot_types):
                 ax = axs[i]
 
-                if ptype == "iv":
-                    if np.all(isig == 0): # Check if data is logical, if not, skip
-                        SC_VB.pop()
-                        SC_VB.append("N/A")
+                if ptype == "iv": 
                     ax.plot(vb * A2uA, isig * A2uA, '.', color=cs[tes], label=NAMES[tes])
                     ax.set_ylabel(r'Measured TES branch current ($\mu$A)')
                     ax.set_xlabel(r'TES bias (nV)')  
@@ -328,25 +307,25 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
             TES.append(NAMES[tes])
             SC_VB.append("N/A")
 
-    if "iv" in plot_types:
-        iv_ax = axs[plot_types.index("iv")]
-        TES.append("Stitch Type")
-        SC_VB.append(stitch_type) 
-        table_data = []
-        for i in range(len(TES)):
-            table_data.append([TES[i], SC_VB[i]])
-            
-        # Add the table with colored text
-        table = iv_ax.table(cellText=table_data, colLabels=['TES', 'Transition (nV)'], cellLoc='center', loc='center', bbox=[-1, 0, .6, 1])
-        
-        # Apply color to table font
-        for i, key in enumerate(TES):
-            if key == "Stitch Type":
-                continue
-            row_index = i
-            cell = table[(row_index + 1, 0)]
-            color = cs[i] 
-            cell.set_text_props(color=color)
+    # Plot the table, regardless of plot type
+    TES.append("Stitch Type")
+    SC_VB.append(stitch_type) 
+    table_data = []
+    for i in range(len(TES)):
+        table_data.append([TES[i], SC_VB[i]])
+
+    # Add the table to the first axis
+    axs[0].table(cellText=table_data, colLabels=['TES', 'Transition (V)'], cellLoc='center', loc='center', bbox=[-1, 0, .6, 1])
+    
+    # Color the table cells based on TES colors
+    for i, key in enumerate(TES):
+        if key == "Stitch Type":
+            continue
+        row_index = i
+        cell = axs[0].tables[0][(row_index + 1, 0)]
+        color = cs[i] 
+        cell.set_text_props(color=color)
+
     plt.suptitle(f"{runNumber}: Runs {start}-{end}")
     if num_plots != 1:
         plt.tight_layout(rect=[0, .01, 1, 0.99]) 
