@@ -220,18 +220,19 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
             vb = ibis[:, tes, 0] * uA2A
             isig = ibis[:, tes, 1]
 
-            if np.all(vb == 0) or np.all(isig==0): # Check if data is logical, if not, skip
-                continue
 
             SC_trans_index, transition_vb = find_SC_transition(vb, isig)
             sc_transition_isig = vb[SC_trans_index]
             
-            if NAMES[tes] in exclude:
+            if NAMES[tes] in exclude or np.all(vb == 0) or np.all(isig == 0):
                 TES.append(NAMES[tes])
                 SC_VB.append("N/A")
                 continue  # Skip further processing for excluded TES
             
             TES.append(NAMES[tes])
+
+            if np.all(vb == 0) or np.all(isig == 0): # Check if data is logical, if not, skip
+                continue
             
             trans = "N/A"
             if transition_vb is not None:
@@ -315,7 +316,7 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
         table_data.append([TES[i], SC_VB[i]])
 
     # Add the table to the first axis
-    axs[0].table(cellText=table_data, colLabels=['TES', 'Transition (nV)'], cellLoc='center', loc='center', bbox=[-1, 0, .6, 1])
+    axs[0].table(cellText=table_data, colLabels=['TES', 'Transition (nV)'], cellLoc='center', loc='center', bbox=[-1, 0, .7, 1])
     
     # Color the table cells based on TES colors
     for i, key in enumerate(TES):
@@ -329,5 +330,5 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
     plt.suptitle(f"{runNumber}: Runs {start}-{end}")
     if num_plots != 1:
         plt.tight_layout(rect=[0, .01, 1, 0.99]) 
-        plt.subplots_adjust(wspace=0.3, hspace=0) 
+        plt.subplots_adjust(wspace=0.35) 
     plt.show()
