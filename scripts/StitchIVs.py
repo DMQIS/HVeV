@@ -1,3 +1,7 @@
+# Script for fixing flux jumps in IV data, stitch_type="JumpBuster" in plot_sweep on a dataset to stitch the jumps together
+# Can plot unstitched curves by stitch_type="none"
+# Can plot RV and PV curves with fixed jumps in plot_sweep by plot_type="rv", plot_type="pv", or multiple plots plot_type="iv+rv+pv"
+
 # Imports
 import numpy as np
 import matplotlib.pyplot as plt
