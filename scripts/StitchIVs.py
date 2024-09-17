@@ -18,7 +18,6 @@ R_FB = 5000*OHM
 R_CABLE = 0*OHM 
 ADC_GAIN = 2
 ADC_RANGE = 8
-R_COLD_SHUNT = 5*mOHM
 R_PARA = 15*mOHM
 R_TOTAL = R_CABLE + R_FB
 M_FB = 2.4
@@ -215,11 +214,12 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
     for tes in range(len(NAMES)):
         if NAMES[tes] in include:
             # Extract and convert vb and isig
-            vb = ibis[:, tes, 0] * R_COLD_SHUNT # convert I_b to v_b by value of shunt resistor
+            I_bias = ibis[:, tes, 0]
+            vb = I_bias * R_COLD_SHUNT  # Convert I_b to v_b by value of shunt resistor
             isig = ibis[:, tes, 1]
 
             SC_trans_index, transition_vb = find_SC_transition(vb, isig)
-            sc_transition_isig = vb[SC_trans_index]
+            sc_transition_isig = vb[SC_trans_index] if SC_trans_index is not None else None
             
             if NAMES[tes] in exclude or np.all(vb == 0) or np.all(isig == 0):
                 TES.append(NAMES[tes])
@@ -228,28 +228,24 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
             
             TES.append(NAMES[tes])
 
-            if np.all(vb == 0) or np.all(isig == 0): # Check if data is logical, if not, skip
+            if np.all(vb == 0) or np.all(isig == 0):  # Check if data is logical, if not, skip
+                SC_VB.append("N/A")
                 continue
             
             trans = "N/A"
             if transition_vb is not None:
-                trans = transition_vb
-                trans = float(trans)
-                if trans == 0.00:
-                    SC_VB.append("N/A")
-                else:
-                    SC_VB.append(f"{trans:.2f}")
+                trans = float(transition_vb)
+                SC_VB.append(f"{trans:.2f}" if trans != 0.00 else "N/A")
             else:
                 SC_VB.append(trans)
             
             # Apply the stitching method if necessary
-            if stitch_type in STITCHING_METHODS:
-                if stitch_type != "none":
-                    vb, isig = STITCHING_METHODS[stitch_type](vb, isig)
-            else:
+            if stitch_type in STITCHING_METHODS and stitch_type != "none":
+                vb, isig = STITCHING_METHODS[stitch_type](vb, isig)
+            elif stitch_type != "none":
                 print("Not a valid stitching method.")
 
-            if np.all(isig == 0): # Check if data is logical, if not, skip
+            if np.all(isig == 0):  # Check if data is logical, if not, skip
                 SC_VB.pop()
                 SC_VB.append("N/A")
                 continue
@@ -259,36 +255,41 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
                 ax = axs[i]
 
                 if ptype == "iv": 
-                    ax.plot(vb, isig * A2uA, '.', color=cs[tes], label=NAMES[tes]) # UNIT
+                    ax.plot(vb, isig * A2uA, '.', color=cs[tes], label=NAMES[tes])  # UNIT
                     ax.set_ylabel(r'Measured TES branch current ($\mu$A)')
                     ax.set_xlabel(r'TES bias (V)') 
                     
                 ####### MATH #######
-                R_COLD_SHUNT = 5*mOHM
-                R_PARA = 15*mOHM 
+                I_tes = np.where(isig != 0, isig, 1e-16)  # Remove zeroes for div by zero error, still just isig
+                min_length = min(len(vb), len(I_tes))  # Find minimum length to avoid mismatch
+                
+                if len(vb) != min_length:
+                    vb = vb[:min_length]
+                if len(I_tes) != min_length:
+                    I_tes = I_tes[:min_length]
+                
+                r_tes = (R_COLD_SHUNT) * ((I_bias[:min_length] / I_tes) -1) - (R_PARA)
 
-                # in units of amps? 
-                I_tes = np.where(isig != 0, isig, 1e-16) # remove zeroes for div by zero error, still just isig
-                I_bias = ibis[:, tes, 0]
-                r_tes = (R_COLD_SHUNT) * ((I_bias / (I_tes)) -1) - (R_PARA)
-           
-                power_tes = (isig**2 * r_tes) # Power through TES
+                if len(r_tes) != len(vb):
+                    r_tes = r_tes[:len(vb)]  # Adjust shape to match vb
+
+                power_tes = (isig[:len(vb)] ** 2 * r_tes)  # Power through TES
                 ####### MATH #######
-                if ptype == "rv":  # Plot resistance thru TES
-                    # should it be M ohms?
-                    r_tes *= 1e-6
+                
+                if ptype == "rv":  # Plot resistance through TES
+                    r_tes *= 1e-6  # Convert to M ohms
                     lower_y_lim = np.percentile(r_tes, 10)
                     upper_y_lim = np.percentile(r_tes, 90)
                     y_val = max(abs(lower_y_lim), abs(upper_y_lim))
                 
-                    ax.plot(vb[:-1], abs(r_tes[:-1]), '.', color=cs[tes], label=NAMES[tes]) # UNIT
+                    ax.plot(vb[:-1], abs(r_tes[:-1]), '.', color=cs[tes], label=NAMES[tes])  # UNIT
                     ax.set_ylabel(r'R(M$\Omega$)')
                     ax.set_xlabel(r'TES bias (V)')
                     ax.set_xlim(vb.min(), vb.max())  # Convert x-limits to the desired unit
                     ax.set_ylim(0, y_val)
                 
-                if ptype == "pv":  # Power thru tes P=I^2 R
-                    power_tes *= 1e6
+                if ptype == "pv":  # Power through TES
+                    power_tes *= 1e6  # Convert to mW
                     lower_y_lim = np.percentile(power_tes, 5)
                     upper_y_lim = np.percentile(power_tes, 95)
                     y_val = max(abs(lower_y_lim), abs(upper_y_lim))
@@ -299,7 +300,6 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
                     ax.set_xlim(vb.min(), vb.max())
                     ax.set_ylim(-y_val, y_val)
 
-                        
             # Remove legend from plot if it exists
             for ax in axs:
                 legend = ax.get_legend()
@@ -313,9 +313,7 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
     # Plot the table, regardless of plot type
     TES.append("Stitch Type")
     SC_VB.append(stitch_type) 
-    table_data = []
-    for i in range(len(TES)):
-        table_data.append([TES[i], SC_VB[i]])
+    table_data = [[TES[i], SC_VB[i]] for i in range(len(TES))]
 
     # Add the table to the first axis
     axs[0].table(cellText=table_data, colLabels=['TES', 'Transition (V)'], cellLoc='center', loc='center', bbox=[-1, 0, .7, 1])
@@ -334,3 +332,4 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
         plt.tight_layout(rect=[0, .01, 1, 0.99]) 
         plt.subplots_adjust(wspace=0.35) 
     plt.show()
+
