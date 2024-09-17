@@ -1,7 +1,3 @@
-# Script for fixing flux jumps in IV data, stitch_type="JumpBuster" in plot_sweep on a dataset to stitch the jumps together
-# Can plot unstitched curves by stitch_type="none"
-# Can plot RV and PV curves with fixed jumps in plot_sweep by plot_type="rv", plot_type="pv", or multiple plots plot_type="iv+rv+pv"
-
 # Imports
 import numpy as np
 import matplotlib.pyplot as plt
@@ -23,7 +19,7 @@ R_CABLE = 0*OHM
 ADC_GAIN = 2
 ADC_RANGE = 8
 R_COLD_SHUNT = 5*mOHM
-R_PARA = 15*mOHM # Is this the correct value?
+R_PARA = 15*mOHM
 R_TOTAL = R_CABLE + R_FB
 M_FB = 2.4
 ADC2A = 1/2**ADC_BITS *ADC_RANGE/(R_FB+R_CABLE) /M_FB/ADC_GAIN
@@ -138,8 +134,6 @@ def find_SC_transition(vb, isig, A2uA=1.0):
     
     if transition_vb == 0:
         return -1, None
-
-    transition_vb *= 1e6
         
     return most_significant_index + 1, transition_vb
 
@@ -221,9 +215,8 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
     for tes in range(len(NAMES)):
         if NAMES[tes] in include:
             # Extract and convert vb and isig
-            vb = ibis[:, tes, 0] * uA2A
+            vb = ibis[:, tes, 0]
             isig = ibis[:, tes, 1]
-
 
             SC_trans_index, transition_vb = find_SC_transition(vb, isig)
             sc_transition_isig = vb[SC_trans_index]
@@ -259,48 +252,53 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
             if np.all(isig == 0): # Check if data is logical, if not, skip
                 SC_VB.pop()
                 SC_VB.append("N/A")
+                continue
             
             # Plotting based on plot_type
             for i, ptype in enumerate(plot_types):
                 ax = axs[i]
 
                 if ptype == "iv": 
-                    ax.plot(vb * A2uA, isig * A2uA, '.', color=cs[tes], label=NAMES[tes])
+                    ax.plot(vb, isig * A2uA, '.', color=cs[tes], label=NAMES[tes]) # UNIT
                     ax.set_ylabel(r'Measured TES branch current ($\mu$A)')
-                    ax.set_xlabel(r'TES bias (nV)')  
-
-                elif ptype == "rv" or ptype == "pv":
-                    safe_isig = np.where(isig != 0, isig, 1e-16)
-                    rp = np.mean(vb[0:SC_trans_index] / safe_isig[0:SC_trans_index])
-                    r = (vb / safe_isig) - rp
+                    ax.set_xlabel(r'TES bias (V)') 
                     
-                    if ptype == "rv":
-                        lower_y_lim = np.percentile(r, 10) 
-                        upper_y_lim = np.percentile(r, 90) 
-                        y_val = max(abs(lower_y_lim), abs(upper_y_lim))
-                        
-                        ax.plot(vb[:-1] * A2uA, abs(r[:-1]), '.', color=cs[tes], label=NAMES[tes])
-                        ax.set_ylabel(r'R($\Omega$)')
-                        ax.set_xlabel(r'TES bias (nV)')
-                        ax.set_xlim(vb.min() * A2uA, vb.max() * A2uA)  # Convert x-limits to the desired unit
-                        ax.set_ylim(-y_val, y_val)
-                        
-                    else:  # PV plot
-                        num = R_COLD_SHUNT * isig
-                        R_tot = R_COLD_SHUNT + R_PARA
-                        denom = R_tot + r
-                        I_S = num / denom
-                        power = (I_S**2 * r * W2pW)
-                        
-                        lower_y_lim = np.percentile(power, 5)   
-                        upper_y_lim = np.percentile(power, 95) 
-                        y_val = max(abs(lower_y_lim), abs(upper_y_lim))
+                ####### MATH #######
+                R_COLD_SHUNT = 5*mOHM
+                R_PARA = 15*mOHM 
 
-                        ax.plot(vb * A2uA, power, '.', color=cs[tes], label=NAMES[tes])
-                        ax.set_ylabel(r'P (pW)')
-                        ax.set_xlabel(r'TES bias (nV)')
-                        ax.set_xlim(vb.min() * A2uA, vb.max() * A2uA)  
-                        ax.set_ylim(-y_val, y_val)
+                # in units of amps? 
+                I_tes = np.where(isig != 0, isig, 1e-16) # remove zeroes for div by zero error, still just isig
+                I_bias = (I_tes) + (vb / (R_COLD_SHUNT))
+                r_tes = (R_COLD_SHUNT) * ((I_bias / (I_tes)) -1) - (R_PARA)
+           
+                power_tes = (isig**2 * r_tes) # Power through TES
+                ####### MATH #######
+                if ptype == "rv":  # Plot resistance thru TES
+                    # should it be M ohms?
+                    r_tes *= 1e-6
+                    lower_y_lim = np.percentile(r_tes, 10)
+                    upper_y_lim = np.percentile(r_tes, 90)
+                    y_val = max(abs(lower_y_lim), abs(upper_y_lim))
+                
+                    ax.plot(vb[:-1], abs(r_tes[:-1]), '.', color=cs[tes], label=NAMES[tes]) # UNIT
+                    ax.set_ylabel(r'R(M$\Omega$)')
+                    ax.set_xlabel(r'TES bias (V)')
+                    ax.set_xlim(vb.min(), vb.max())  # Convert x-limits to the desired unit
+                    ax.set_ylim(0, y_val)
+                
+                if ptype == "pv":  # Power thru tes P=I^2 R
+                    power_tes *= 1e6
+                    lower_y_lim = np.percentile(power_tes, 5)
+                    upper_y_lim = np.percentile(power_tes, 95)
+                    y_val = max(abs(lower_y_lim), abs(upper_y_lim))
+                
+                    ax.plot(vb, power_tes, '.', color=cs[tes], label=NAMES[tes])
+                    ax.set_ylabel(r'P (mW)')
+                    ax.set_xlabel(r'TES bias (V)')
+                    ax.set_xlim(vb.min(), vb.max())
+                    ax.set_ylim(-y_val, y_val)
+
                         
             # Remove legend from plot if it exists
             for ax in axs:
@@ -320,7 +318,7 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
         table_data.append([TES[i], SC_VB[i]])
 
     # Add the table to the first axis
-    axs[0].table(cellText=table_data, colLabels=['TES', 'Transition (nV)'], cellLoc='center', loc='center', bbox=[-1, 0, .7, 1])
+    axs[0].table(cellText=table_data, colLabels=['TES', 'Transition (V)'], cellLoc='center', loc='center', bbox=[-1, 0, .7, 1])
     
     # Color the table cells based on TES colors
     for i, key in enumerate(TES):
