@@ -215,7 +215,7 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
     for tes in range(len(NAMES)):
         if NAMES[tes] in include:
             # Extract and convert vb and isig
-            vb = ibis[:, tes, 0]
+            vb = ibis[:, tes, 0] * R_COLD_SHUNT # convert I_b to v_b by value of shunt resistor
             isig = ibis[:, tes, 1]
 
             SC_trans_index, transition_vb = find_SC_transition(vb, isig)
@@ -269,7 +269,7 @@ def plot_sweep(ibis, datadir, rns, exclude, include, stitch_type="", plot_type="
 
                 # in units of amps? 
                 I_tes = np.where(isig != 0, isig, 1e-16) # remove zeroes for div by zero error, still just isig
-                I_bias = (I_tes) + (vb / (R_COLD_SHUNT))
+                I_bias = ibis[:, tes, 0]
                 r_tes = (R_COLD_SHUNT) * ((I_bias / (I_tes)) -1) - (R_PARA)
            
                 power_tes = (isig**2 * r_tes) # Power through TES
