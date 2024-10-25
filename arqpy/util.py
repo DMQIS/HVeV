@@ -131,9 +131,11 @@ def fitPulse(t,trace,poles=2,x0=None,method='Nelder-Mead'):
 	mle[1:1+poles] = 10**mle[1:1+poles]
 	return mle
 
-# turn traces in PSDs ^(1/2)
+# Make PSD(s) from traces. No normalization, for use in OF
 def makePSDs(traces,chs=None,nbins=None,ntraces=None,fsamp=None):
 	# handles dict, or list of traces
+	# ntraces: maximum number of traces to use
+	# fsamp: if provided, calculates PSD frequencies
 	if type(traces) is dict:
 		if chs is None:
 			chs = traces.keys() # use all
@@ -145,7 +147,7 @@ def makePSDs(traces,chs=None,nbins=None,ntraces=None,fsamp=None):
 		for ch in chs:
 			psd_ch = []
 			for i in range(ntraces):
-				psd = np.abs(np.fft.rfft(traces[ch][i][:nbins]))
+				psd = np.abs(np.fft.rfft(traces[ch][i][:nbins]))**2
 				psd_ch.append(psd)
 			if len(psd_ch) > 0:
 				psds[ch] = np.median(psd_ch,axis=0)
@@ -158,7 +160,7 @@ def makePSDs(traces,chs=None,nbins=None,ntraces=None,fsamp=None):
 			nbins=len(traces)
 		psd_ch = []
 		for i in ntraces:
-			psd = np.abs(np.fft.rfft(traces[i][:nbins]))
+			psd = np.abs(np.fft.rfft(traces[i][:nbins]))**2
 			psd_ch.append(psd)
 		psds = np.median(psd_ch,axis=0)
 	return psds
@@ -197,7 +199,7 @@ def plotPSDs(psds,fsamp=DCRCfreq,tracelen=None,chs=None,names=None):
 	plt.legend(loc=1)
 	plt.xlim(min(psdfreq[psdfreq>0]),max(psdfreq))
 	plt.xlabel('frequency (Hz)')
-	plt.ylabel(r'noise (A/$\sqrt{Hz})$')
+	plt.ylabel(r'noise (A/$\sqrt{Hz}$)')
 	return
 
 # "PSD" in CDMS-preferred units
@@ -246,6 +248,7 @@ def loadEvents(event_nums=None,data_type='SLAC',**kwargs):
 			trigid = kwargs['trigid']
 		if 'loadtrig' in kwargs:
 			loadtrig = kwargs['loadtrig']
+		# set up traces object
 		traces = {}
 		if loadtrig:
 			traces['triggers'] = []
@@ -253,8 +256,10 @@ def loadEvents(event_nums=None,data_type='SLAC',**kwargs):
 			traces[det] = {}
 			for ch in chs:
 				traces[det][ch] = []
-		reader = cdms.rawio.IO._DataReader()
+		# loop over files + put traces in `traces`
 		for fn in files:
+			# load events + ODB info
+			reader = cdms.rawio.IO._DataReader()
 			events = None
 			try:
 				# first get DriverPGAGains
@@ -281,11 +286,15 @@ def loadEvents(event_nums=None,data_type='SLAC',**kwargs):
 				else:
 					events = reader.get_data_list(True,True,True,True,True)
 			except RuntimeError:
+				print(f'WARNING: Skipping {fn}')
 				continue
 			if events is None:
-				print(f'ERROR: events not found')
+				print(f'ERROR: events not found in {fn}')
 				return
-			for event in events:
+
+			# loop through events and grab traces + triggers
+			for i in range(len(events)):
+				event = events[i]
 				if event['event']['TriggerType'] != 3: # entry doesn't have traces
 					continue
 				for det in detectors:
@@ -296,12 +305,15 @@ def loadEvents(event_nums=None,data_type='SLAC',**kwargs):
 						traces[det][ch].append(trace)
 				if loadtrig:
 					t0 = event['trigger']['TriggerTime']
-					nev = event['event']['EventNumber'] + 1
+					nev = i + 1
 					triggers = []
-					while events[nev]['event']['TriggerType'] == 16: # LED trigger
-						trigtime = events[nev]['trigger']['TriggerTime'] - t0
-						triggers.append(trigtime)
-						nev = nev + 1
+					while nev < len(events):
+						if events[nev]['event']['TriggerType'] == 16: # LED trigger
+							trigtime = events[nev]['trigger']['TriggerTime'] - t0
+							triggers.append(trigtime)
+							nev = nev + 1
+						else:
+							break
 					traces['triggers'].append(triggers)
 		return traces
 	else:

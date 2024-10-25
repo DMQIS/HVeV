@@ -27,13 +27,13 @@ from .trigger import Trigger
 
 
 class RQ: 
-	def __init__(self, data=None, traces=None, chs=None, ch_names=None, detector=1,
+	def __init__(self, data=None, chs=None, ch_names=None, detector=1,
 				 fsamp=625000, pretrig=4096, posttrig=4096, ADC2A=1.0,
 				 PSDs=None, pulse_templates=None,
-				 max_chi2_freq=None, lpfs=None,
+				 maxchi2freq=None, lpfs=None,
 				 OFL=True, OFL_max_delay=None,
 				 OFP=True, OFP_window=250,
-				 baselength=4086, taillength=3096, maxchi2freq=None,
+				 baselength=4086, taillength=3096,
 				 PlateauDelay=100, PlateauLength=100,
 				 UseFilterForRQs=False, CutoffFrequenciesForRQs=None, FilterOrderForRQs=10,
 				 WindowForPulseRQs=100, saturation_amplitude=1.0,
@@ -41,13 +41,19 @@ class RQ:
 				 threshold=None, deactivation_threshold=None):
 		'''
 		Class for RQ calculations
+		data
+		chs
+		ch_names
+		detector
 		fsamp: sampling frequency (Hz)
 		pretrig/posttrig: bins to use before/after the pulse leading-edge
 		ADC2A: scale factor to apply to traces, before processing
 		       used to convert ADC units to Amperes
-		max_chi2_freq: max frequency to use in chi2 computations (Hz)
+		PSDs = dictionary of "PSDs" (actually = 
+		pulse_templates
+		maxchi2freq: max frequency to use in chi2 computations (Hz)
 		               used to ignore HF noise/cutoffs/etc that would ruin chi2
-		LPF_freqs: dict of max freq bins to use, for low-pass filtering
+		lpfs: dict of max freq bins to use, for low-pass filtering
 		OFL: option to compute OF with optimized pulse delay
 		OFL_max_delay: max pulse delay to consider, in bins
 		OFP: option to compute OF with pileup handling
@@ -63,7 +69,7 @@ class RQ:
 		self.pretrig = pretrig
 		self.posttrig = posttrig
 		self.ADC2A = ADC2A
-		self.lpfs = None
+		self.lpfs = lpfs
 		self.OFL = OFL
 		self.OFL_max_delay = OFL_max_delay
 		self.OFP = OFP
@@ -89,8 +95,15 @@ class RQ:
 		# trace/PSD math
 		self.tracelen = pretrig + posttrig
 		self.frequencies = np.fft.rfftfreq(self.tracelen,1/fsamp)
+
+		# max frequency stuff
 		if maxchi2freq is not None:
 			self.maxchi2bin = np.argmax(self.frequencies>=maxchi2freq)
+			if lpfs is None:
+				print('Using maxchi2freq for lpfs, also')
+				self.lpfs = {}
+				for ch in chs:
+					self.lpfs[ch] = self.maxchi2bin
 		else:
 			self.maxchi2bin = None
 		'''
@@ -139,7 +152,9 @@ class RQ:
 	def setTemplates(self,templates,chs=None):
 		# chs: list of channel names
 		# templates: list of pulse templates
-		if type(templates) is dict:
+		if templates is None:
+			self.templates = None
+		elif type(templates) is dict:
 			self.templates = templates
 		elif chs is not None: # handle array of arrays
 			self.templates = {}
@@ -170,20 +185,15 @@ class RQ:
 		for ch in chs:
 			J = np.array(self.PSDs[ch]) # copy before modifying
 			J[0] = np.inf # ignore DC component
-			if self.lpfs is not None: # low-pass filter, optionally
-				max_freq_bin = self.lpfs[ch]
-			else:
-				max_freq_bin = len(J)
 			s = self.templates[ch]
 			sf = np.fft.rfft(s) # shortcut for real-valued input
-			sf[max_freq_bin:] = 0.0
+			if self.lpfs is not None: # low-pass filter, optionally
+				max_freq_bin = self.lpfs[ch]
+				sf[max_freq_bin:] = 0.0
+			else:
+				max_freq_bin = len(J)
 			phi = np.conjugate(sf)/J
 			norm = np.real(np.sum(phi*sf))
-			# TODO: allow chi2 max freq bin, to ignore high freq discrepancies
-			#if self.max_chi2_freq_bin is not None:
-			#	OF_norm_for_chi2_rq = OF_norm 
-			#else:
-			#	OF_norm_for_chi2_rq = np.real(np.sum((OF*trigTemplate_fft)[:self.MAX_CHISQ_FREQ_BIN]))
 			phi_prime = phi/norm
 
 			phis[ch] = phi
@@ -223,9 +233,32 @@ class RQ:
 			theores[ch] = sigA
 		return theores
 
+	# function to average triggered pulses
+	def averageTrigPulse(self,data,ch,nevents=None,offset=0):
+		# for now, data must be a list of MIDAS files
+		events = loadEvents(files=data,detectors=[self.detector],
+							chs=[ch],ADC2A=self.ADC2A,loadtrig=True)
+		traces = events[self.detector]
+		if nevents is None: # use all events by default
+			nevents = len(traces[ch])
+		elif nevents > len(traces[ch]):
+			nevents = len(traces[ch])
+
+		trig_traces = [] # store all short trace cut-outs here
+		for evn in range(nevents):
+			trace = traces[ch][evn]
+			for trigger in events['triggers'][evn]:
+				ind = int((trigger-offset)*self.fsamp)
+				if ind > self.pretrig and ind < len(trace)-self.posttrig:
+					trig_trace = trace[ind-self.pretrig:ind+self.posttrig]
+					trig_traces.append(trig_trace)
+		print(len(trig_traces))
+		avg_trace = np.mean(trig_traces,axis=0)
+		return avg_trace
+
 	# run various OFs on a single trace
 	#   implemented this way to reduce repeated operations
-	def _runOFsingle(self,trace,norm,sf,phi_prime,J,chi2mask,max_freq_bin=None,OFL=True,OFP=False):
+	def _runOFsingle(self,trace,norm,sf,phi_prime,J,chi2mask,OFL=True,OFP=False):
 		# setup
 		OF_RQs = {}
 		N = float(len(trace))
@@ -239,6 +272,8 @@ class RQ:
 		A_nodelay = np.real(np.sum(OFtrace))
 		chi0 = np.sum(np.abs(vf[chi2mask])**2/J[chi2mask]) # first part of chi2
 		chi2_nodelay = 2 * (chi0-np.abs(A_nodelay)**2*norm)
+		#if np.any(~chi2mask): # TODO: do manual chi2 in this case. Check algebra...
+		#	chi2_nodelay = 2*np.sum(np.abs(vf[chi2mask]-A_nodelay*sf[chi2mask])**2/J[chi2mask])
 		OF_RQs['OF0_A'] = A_nodelay
 		OF_RQs['OF0_chi2'] = chi2_nodelay
 	
@@ -247,6 +282,8 @@ class RQ:
 			#  Calculate A(t0) for all t0 in one step:
 			As = N/2*np.fft.irfft(OFtrace)
 			chi2s = 2 * (chi0-np.abs(As)**2*norm)
+			#if np.any(~chi2mask): # TODO: do manual chi2 in this case. Check algebra...
+			#	chi2_nodelay = np.array([2*np.sum(np.abs(vf[chi2mask]-A*sf[chi2mask])**2/J[chi2mask]) for A in As])
 			#  then find best t0
 			ind  = np.argmin(chi2s)
 			t0   = ind * dt
@@ -302,7 +339,7 @@ class RQ:
 		# Trigger keywords:
 		keys = ['mode','data','chs','trigger_chs','detector','fsamp','ADC2A','pretrig','posttrig',
 		        'randomrate','filters','window','usegaus','sigmas','trigger_points',
-		        'threshold','deactivation_threshold']
+		        'threshold','deactivation_threshold','remove_filter_offset','trigger_offsets']
 		trig_kwargs = {} # trigger key word arguments
 		for key in kwargs:
 			trig_kwargs[key] = kwargs[key]
@@ -453,57 +490,6 @@ class RQ:
 		return A1s,A2s,t1,t2,Xr,Xr_for_chi2_rq
 	'''
 
-	'''
-	# call `_runOFsingle` on all specified events/channels
-	def runOF(self,chs=None):
-		RQ_list=['OF0_A', 'OF0_chi2',
-				'OF_A', 'OF_chi2', 'OF_time',
-				'OFL_A', 'OFL_chi2', 'OFL_time',
-				'OFP1','OFP2','OFP1_time','OFP2_time','OFP_chi2','OFP_chi2_full','Npileup']
-		if chs is None:
-			chs = self.chs
-
-		# set up RQ arrays
-		for ch in chs:
-			for RQ_name in RQ_list:
-				self.RQs[f'{RQ_name}_{ch}']=[]
-
-		#
-		for trace in Traces[ch]:
-			continue
-
-		phi_prime = self.phi_primes[ch]
-		norm = self.norms[ch]
-		sf = self.sfs[ch]
-		J = np.array(self.Js[ch]) # make a copy
-
-		# ignore high-freq bins for chi2, if desired
-		chi2mask = np.ones(len(J),dtype=bool)
-		if self.MAX_CHISQ_FREQ_BIN >= 0:
-			chi2mask[MAX_CHISQ_FREQ_BIN+1:] = False
-
-		# low pass filter, if desired. Recall negative OF_LPF means no LPF
-		if max_freq_bin is not None:
-			J_LPF = np.array
-			J[max_freq_bin:] += np.inf
-			# also calculate LPF trace
-			vf[OF_LPF:] = 0
-			trace_lpf = np.fft.irfft(trace_freq)
-			OF_RQs['trace'] = trace_lpf
-		else:
-			OF_RQs['trace'] = trace
-
-		OF_results_ch = self._runOFsingle(trace, ch, OF_LPF=self.OF_LPF_dict[ch], pileup_window=self.OFP_WINDOW)
-
-		for key in RQlist:
-			if key in OF_results_ch:
-				OF_results[f'{key}_{ch}'].append(OF_results_ch[key])
-		if 'total' in ch.lower():
-			for key in RQlist_total:
-				if key in OF_results_ch:
-					OF_results[f'{key}_{ch}'].append(OF_results_ch[key])
-	'''
-
 
 	def processTraces(self):
 		# setup
@@ -551,35 +537,43 @@ class RQ:
 									  else peak1_amplitude[ch][1]*0.5
 			
 
+			# OF variables for this channel (excluding trace)
+			phi_prime = self.phi_primes[ch]
+			sf = self.sfs[ch]
+			J = np.array(self.Js[ch]) # make a copy
+
+			# low pass filter, optionally
+			if self.lpfs is not None:
+				max_freq_bin = self.lpfs[ch]
+				J[max_freq_bin:] = np.inf
+			else:
+				max_freq_bin = len(J)
+
+			# ignore high-freq bins for chi2, optionally
+			chi2mask = np.ones(len(J),dtype=bool)
+			if self.maxchi2bin is not None:
+				chi2mask[self.maxchi2bin+1:] = False
+
+			norm_chi2 = np.sum(np.abs(sf[chi2mask])**2/J[chi2mask])
+
 			nevents = len(traces[ch])
 			print(f'Processing {ch}. {nevents} events')
 			for trace in traces[ch]:
 				#if i % 100 == 0:
 				#	print(i,'/',nevents)
-				phi_prime = self.phi_primes[ch]
-				norm = self.norms[ch]
-				sf = self.sfs[ch]
-				J = np.array(self.Js[ch]) # make a copy
-
-				# ignore high-freq bins for chi2, if desired
-				chi2mask = np.ones(len(J),dtype=bool)
-				if self.maxchi2bin is not None:
-					chi2mask[maxchi2bin+1:] = False
-
-				# low pass filter, if desired
-				if self.lpfs is not None: # low-pass filter, optionally
-					max_freq_bin = self.lpfs[ch]
-					J_LPF = np.array
-					J[max_freq_bin:] += np.inf
-					# also calculate LPF trace
-					vf[OF_LPF:] = 0
+				# TODO: calculate LPF trace
+				'''
+				if self.lpfs is not None:
+					vf = np.fft.rfft(trace)
+					vf[max_freq_bin:] = 0
 					trace_lpf = np.fft.irfft(vf)
 					OF_results['trace'] = trace_lpf
 				else:
-					max_freq_bin = len(J)
 					OF_results['trace'] = trace
+				'''
+				OF_results['trace'] = trace
 
-				OF_results_ch = self._runOFsingle(trace,norm,sf,phi_prime,J,chi2mask,max_freq_bin=max_freq_bin)
+				OF_results_ch = self._runOFsingle(trace,norm_chi2,sf,phi_prime,J,chi2mask)
 
 				for key in RQlist:
 					if key in OF_results_ch:
@@ -746,7 +740,7 @@ class RQ:
 
 
 	# plot noise PSDs
-	def plotPSD(self,chs=None):
+	def plotPSDs(self,chs=None):
 		if chs is None:
 			chs = self.chs
 		for ch in chs:
@@ -766,7 +760,7 @@ class RQ:
 		plt.ylabel(r'noise (A/$\sqrt{Hz})$')
 		return
 
-	# utility function
+	# plot label utility function
 	def getLabelFromKey(self,key):
 		ch = key.split('_')[-1]
 		if ch in self.chs:
@@ -775,7 +769,8 @@ class RQ:
 			else:
 				label = ch
 		else:
-			return None
+			label = None
+		return label
 
 	def plot1d(self,key):
 		legend = False
@@ -795,17 +790,17 @@ class RQ:
 
 	def hist1d(self,key,bins=None):
 		legend = False
+		vals = self.results[key]
+		if bins is None:
+			bins = np.linspace(np.nanmin(vals),np.nanmax(vals),200)
 		if key.split('_')[-1] in MIDASchs:
 			ch = key.split('_')[-1]
 			label = self.getLabelFromKey(key)
-			vals = self.results[key]
-			if bins is None:
-				bins = np.linspace(np.nanmin(vals),np.nanmax(vals),200)
 			plt.hist(vals,bins=bins,histtype='step',color=MIDAScolors[MIDASchs.index(ch)],label=label)
 			if label is not None:
 				legend = True
 		else:
-			plt.plot(self.results[key])
+			plt.hist(vals,bins=bins,histtype='step')
 		if legend:
 			plt.legend()
 		xlabel = '_'.join(key.split('_')[:-1]) # cut off "_ch"

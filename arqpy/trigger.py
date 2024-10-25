@@ -33,7 +33,8 @@ class Trigger:
 				 threshold=None, deactivation_threshold=None,
 				 fsamp=625000, pretrig=4096, posttrig=4096, ADC2A=1.0, detector=1,
 				 filters=[], usegaus=False, sigmas=None, usewindow=False,
-				 randomrate=0, remove_filter_offset=True):
+				 randomrate=0, remove_filter_offset=True, trigger_offsets=None,
+				 align_max=True):
 		#		 BYPASS_HIGH_ENERGY_IN_FILTER = False,
 		#		 align_max = True, OF_LPF=-1, verbose=True, data_type=None):
 		'''
@@ -67,6 +68,7 @@ class Trigger:
 		align_max: boolean
 				Align the trigger point to the maximum after the threshold-crossing
 		remove_filter_offset: remove time offset induced by filter (mode 1 only)
+							  OF0 should work when `True`
 		'''
 		
 		# parse arguments
@@ -84,7 +86,7 @@ class Trigger:
 		self.randomrate = randomrate
 		self.remove_filter_offset = remove_filter_offset
 		self.pileup_window = 250
-		self.align_max = False
+		self.align_max = align_max
 		# more argument handling
 		if trigger_chs is None:
 			if chs is not None:
@@ -95,6 +97,18 @@ class Trigger:
 		if mode not in [0,1,2,3]:
 			print(f'ERROR: Unrecognized trigger mode {mode}')
 			return -1
+		if trigger_offsets is None:
+			self.trigger_offsets = {}
+			for ch in self.trigger_chs:
+				self.trigger_offsets[ch] = 0.0
+		elif type(trigger_offsets) is dict:
+			self.trigger_offsets = trigger_offsets
+		else:
+			print('WARNING: Unrecognized type for `trigger_offsets`. Using 0s')
+			self.trigger_offsets = {}
+			for ch in self.trigger_chs:
+				self.trigger_offsets[ch] = 0.0
+
 		# construct filters
 		if mode == 1: # filter
 			if usegaus:
@@ -120,11 +134,13 @@ class Trigger:
 					window_filters.append()
 			'''
 				
-			# trigger offsets
-			self.trigger_offsets = {}
+			# filter trigger offsets
 			if self.remove_filter_offset:
+				print('Removing filter offsets')
 				for ch in self.trigger_chs:
+					# align triggered pulse trace with template
 					filtered_trace = self._apply_filter(self.filters[ch],self.filters[ch])
+					offset = np.argmax(filtered_trace)
 					'''
 					rfothreshold = np.max(filtered_template)*0.8
 					trigger_points = self._threshold_trigger(filtered_trace,
@@ -134,11 +150,7 @@ class Trigger:
 					else:
 						offset = self.pretrig - trigger_points[0]
 					'''
-					offset = np.argmax(filtered_trace)
-					self.trigger_offsets[ch] = offset
-			else:
-				for ch in self.trigger_chs:
-					self.trigger_offsets[ch] = 0.0
+					self.trigger_offsets[ch] += offset - pretrig
 
 		return
 
@@ -210,15 +222,19 @@ class Trigger:
 			for ch in self.trigger_chs:
 				trace = traces[ch][i]
 				if mode == 0: # trigger
-					trigger_points = self._threshold_trigger(trace,self.threshold[ch],trigger_offset=self.trigger_offsets[ch])
+					trigger_points = self._threshold_trigger(trace,self.threshold[ch])
 				elif mode == 1: # filter + trigger
 					filtered_trace = self._apply_filter(trace,self.filters[ch])
-					trigger_points = self._threshold_trigger(filtered_trace,self.threshold[ch],trigger_offset=self.trigger_offsets[ch])
+					trigger_points = self._threshold_trigger(filtered_trace,self.threshold[ch])
 				elif mode == 2: # randoms
 					trigger_points = self._random_trigger()
-					break # don't need to repeat for each channel
 				elif mode == 3: # external
-					trigger_points = np.array(events['triggers']*self.fsamp,dtype=int)
+					trigger_points = np.array(events['triggers'][i])*self.fsamp
+					trigger_points = np.array(trigger_points,dtype=int)
+				# subtract offset
+				offset = int(self.trigger_offsets[ch])
+				trigger_points -= offset
+				if mode in [2,3]:
 					break # don't need to repeat for each channel
 			# remove trigger points too close to the edge
 			mask = (trigger_points>self.pretrig)&(trigger_points<tracelen-self.posttrig)
@@ -245,13 +261,13 @@ class Trigger:
 				for ch in self.chs:
 					trace = traces[ch][i][trigger_point-self.pretrig:trigger_point+self.posttrig]
 					triggered_traces[ch].append(trace)
-		print('Found {0}'.format(len(triggered_traces[ch])))	
+		print('{0} triggers'.format(len(triggered_traces[ch])))
 
 		return triggered_traces
 
 	def _threshold_trigger(self, trace, threshold, rising_edge=True, 
-						   deactivation_threshold=None, align_max=True,
-						   peak_search_window_limit=4096, trigger_offset=0):
+						   deactivation_threshold=None, align_max=None,
+						   peak_search_window_limit=4096):
 		# elegant, one-line, constant-threshold discriminator
 		if rising_edge:
 			trigger_points=np.flatnonzero((trace[0:-1]<threshold)&(trace[1:]>=threshold))+1
@@ -259,6 +275,11 @@ class Trigger:
 			trigger_points=np.flatnonzero((trace[0:-1]>threshold)&(trace[1:]<=threshold))+1
 
 		# implement deactivation + align_max
+		if align_max is None:
+			if self.align_max is None:
+				align_max = True
+			else:
+				align_max = self.align_max
 		# TODO: assumes rising_edge
 		if deactivation_threshold is not None:
 			deactivation_window = 0
@@ -269,7 +290,7 @@ class Trigger:
 				if tp < deactivation_window:
 					continue
 				else:
-					if align_max:
+					if self.align_max:
 						tpmax = tp + np.argmax(trace[tp:deactivation_window])
 						new_trigger_points.append(tpmax)
 					else:
@@ -278,15 +299,13 @@ class Trigger:
 					if deactivation_window > peak_search_window_limit:
 						deactivation_window = peak_search_window_limit
 					deactivation_window += tp
-		elif align_max: # similar
+			trigger_points = np.array(new_trigger_points)
+		elif self.align_max: # similar
 			new_trigger_points = []
 			for tp in trigger_points:
 				tpmax = tp + np.argmax(trace[tp:tp+peak_search_window_limit])
 				new_trigger_points.append(tpmax)
-			new_trigger_points = np.unique(new_trigger_points)
-
-		# trigger offsets
-		trigger_points -= trigger_offset
+			trigger_points = np.unique(new_trigger_points)
 		
 		return trigger_points
 	
