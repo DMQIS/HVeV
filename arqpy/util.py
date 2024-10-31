@@ -280,7 +280,8 @@ def loadEvents(event_nums=None,data_type='SLAC',**kwargs):
 				else:
 					# get number of events + read by index, NOT EventTriggerID
 					ned = reader.get_nbevents_dict()
-					all_event_nums = [i for i in range(ned['NbEventsNotEmpty'])]
+					#all_event_nums = [i for i in range(ned['NbEventsNotEmpty'])] 
+					all_event_nums = [i for i in range(ned['NbEventsAll'])] # slow, but needed
 					# read NOT by event['event']['EventTriggerID']
 					reader.set_event_map({fn:all_event_nums}, False)
 				reader.set_detector_list(detectors) # array of ints
@@ -302,7 +303,7 @@ def loadEvents(event_nums=None,data_type='SLAC',**kwargs):
 				if event['event']['TriggerType'] not in [1,3]: # entry doesn't have traces
 					continue
 				for det in detectors:
-					if f'Z{det}' not in event:
+					if f'Z{det}' not in event: # empty event
 						continue
 					for ch in chs:
 						rawtrace = event[f'Z{det}'][ch] # uint16
