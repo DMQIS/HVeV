@@ -140,7 +140,9 @@ class RQ:
 	def setPSD(self,psds,chs=None):
 		# chs: list of channel names
 		# psds: list of PSDs
-		if type(psds) is dict:
+		if psds is None:
+			self.psds = None
+		elif type(psds) is dict:
 			self.PSDs = psds
 		elif chs is not None: # handle array of arrays
 			self.PSDs = {}

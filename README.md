@@ -1,3 +1,8 @@
 # arqpy
 Another "Reduced Quantity" Python library
-for DMQIS
+
+## Installation
+No sophisticated installation yet. To use, add path then import:
+> import sys
+> sys.path.append('..')
+> from arqpy import *

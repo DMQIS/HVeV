@@ -141,11 +141,13 @@ def makePSDs(traces,chs=None,nbins=None,ntraces=None,fsamp=None):
 			chs = traces.keys() # use all
 		if nbins is None:
 			nbins=len(traces[chs[0]][0])
-		if ntraces is None:
-			nbins=len(traces[chs[0]])
 		psds = {}
 		for ch in chs:
 			psd_ch = []
+			if ntraces is None:
+				ntraces = len(traces[ch])
+			elif ntraces > len(traces[ch]):
+				ntraces = len(traces[ch])
 			for i in range(ntraces):
 				psd = np.abs(np.fft.rfft(traces[ch][i][:nbins]))**2
 				psd_ch.append(psd)
@@ -157,9 +159,11 @@ def makePSDs(traces,chs=None,nbins=None,ntraces=None,fsamp=None):
 		if nbins is None:
 			nbins=len(traces[0])
 		if ntraces is None:
-			nbins=len(traces)
+			ntraces = len(traces)
+		elif ntraces > len(traces):
+			ntraces = len(traces)
 		psd_ch = []
-		for i in ntraces:
+		for i in range(ntraces):
 			psd = np.abs(np.fft.rfft(traces[i][:nbins]))**2
 			psd_ch.append(psd)
 		psds = np.median(psd_ch,axis=0)
@@ -213,7 +217,7 @@ def sqrtpsd(t,trace):
 	# DC and nyquist lose factor of 2
 	psd[freq==0] /= 2
 	if len(t) % 2 == 0:
-		psd[idx][-1] /= 2
+		psd[-1] /= 2
 	psd = np.sqrt(norm*psd)
 	return freq, psd
 
@@ -295,9 +299,11 @@ def loadEvents(event_nums=None,data_type='SLAC',**kwargs):
 			# loop through events and grab traces + triggers
 			for i in range(len(events)):
 				event = events[i]
-				if event['event']['TriggerType'] != 3: # entry doesn't have traces
+				if event['event']['TriggerType'] not in [1,3]: # entry doesn't have traces
 					continue
 				for det in detectors:
+					if f'Z{det}' not in event:
+						continue
 					for ch in chs:
 						rawtrace = event[f'Z{det}'][ch] # uint16
 						# invert + convert to float
