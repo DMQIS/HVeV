@@ -49,7 +49,7 @@ class RQ:
 		pretrig/posttrig: bins to use before/after the pulse leading-edge
 		ADC2A: scale factor to apply to traces, before processing
 		       used to convert ADC units to Amperes
-		PSDs = dictionary of "PSDs" (actually = 
+		PSDs = dictionary of "PSDs" (actually = |fft|^2)
 		pulse_templates
 		maxchi2freq: max frequency to use in chi2 computations (Hz)
 		               used to ignore HF noise/cutoffs/etc that would ruin chi2

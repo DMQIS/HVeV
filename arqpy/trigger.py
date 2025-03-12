@@ -219,21 +219,23 @@ class Trigger:
 		for i in range(nevents):
 			if i % 100 == 0:
 				print(i,'/',nevents)
+			trigger_points = np.array([],dtype=int)
 			for ch in self.trigger_chs:
 				trace = traces[ch][i]
 				if mode == 0: # trigger
-					trigger_points = self._threshold_trigger(trace,self.threshold[ch])
+					trigger_points_ch = self._threshold_trigger(trace,self.threshold[ch])
 				elif mode == 1: # filter + trigger
 					filtered_trace = self._apply_filter(trace,self.filters[ch])
-					trigger_points = self._threshold_trigger(filtered_trace,self.threshold[ch])
+					trigger_points_ch = self._threshold_trigger(filtered_trace,self.threshold[ch])
 				elif mode == 2: # randoms
-					trigger_points = self._random_trigger()
+					trigger_points_ch = self._random_trigger()
 				elif mode == 3: # external
-					trigger_points = np.array(events['triggers'][i])*self.fsamp
-					trigger_points = np.array(trigger_points,dtype=int)
+					trigger_points_ch = np.array(events['triggers'][i])*self.fsamp
+				trigger_points_ch = np.array(trigger_points_ch,dtype=int)
 				# subtract offset
 				offset = int(self.trigger_offsets[ch])
-				trigger_points -= offset
+				trigger_points_ch -= offset
+				trigger_points = np.concatenate((trigger_points,trigger_points_ch))
 				if mode in [2,3]:
 					break # don't need to repeat for each channel
 			# remove trigger points too close to the edge

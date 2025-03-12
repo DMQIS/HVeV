@@ -102,9 +102,6 @@ def fitSlope(x,y):
 
 # fit a pulse shape to a trace, and returns fit parameters
 def fitPulse(t,trace,poles=2,x0=None,method='Nelder-Mead'):
-	# fit around pulse
-	start = cfd(trace)
-	t0 = t[start]
 	x = t
 	y = trace
 	# choose fit function and guess
@@ -115,6 +112,8 @@ def fitPulse(t,trace,poles=2,x0=None,method='Nelder-Mead'):
 	elif poles > 3:
 		fitfunc = lambda p: p[0]*pulseN(x,p[1:-1])+p[-1]
 	if x0 is None:
+		start = cfd(trace)
+		t0 = t[start]
 		baseline = np.mean(y[:10])
 		amplitude = np.max(y) - baseline
 		if poles == 2:
@@ -138,7 +137,7 @@ def makePSDs(traces,chs=None,nbins=None,ntraces=None,fsamp=None):
 	# fsamp: if provided, calculates PSD frequencies
 	if type(traces) is dict:
 		if chs is None:
-			chs = traces.keys() # use all
+			chs = list(traces.keys()) # use all
 		if nbins is None:
 			nbins=len(traces[chs[0]][0])
 		psds = {}
@@ -156,17 +155,21 @@ def makePSDs(traces,chs=None,nbins=None,ntraces=None,fsamp=None):
 		if fsamp is not None:
 			psds['frequencies'] = np.fft.rfftfreq(nbins,1/fsamp)
 	else:
+		if len(np.shape(traces) != 2):
+			print('ERROR: Expected dict or list of traces')
+			return
 		if nbins is None:
 			nbins=len(traces[0])
 		if ntraces is None:
 			ntraces = len(traces)
 		elif ntraces > len(traces):
+			print('WARNING: ntraces ({0}) exceeds number of traces ({1})'.format(ntraces,len(traces)))
 			ntraces = len(traces)
 		psd_ch = []
 		for i in range(ntraces):
 			psd = np.abs(np.fft.rfft(traces[i][:nbins]))**2
 			psd_ch.append(psd)
-		psds = np.median(psd_ch,axis=0)
+		psds = np.median(psd_ch,axis=1)
 	return psds
 
 def plotPSDs(psds,fsamp=DCRCfreq,tracelen=None,chs=None,names=None):
@@ -235,14 +238,13 @@ def lpf(trace, fcut, forder, fs=DCRCfreq, forward_backward=True):
 
 
 # IO
-def loadEvents(event_nums=None,data_type='SLAC',**kwargs):
+def loadEvents(files=None,event_nums=None,data_type='SLAC',**kwargs):
 	if data_type == 'SLAC':
 		# return trace dictionary, where traces[det][ch] = [trace0,trace1,...]
 		# parse keyword args
 		trigid = True # use EventTriggerID if True, array index if False
 		loadtrig = True
 		try:
-			files = kwargs['files']
 			detectors = kwargs['detectors']
 			chs = kwargs['chs']
 			ADC2A = kwargs['ADC2A']
@@ -300,7 +302,7 @@ def loadEvents(event_nums=None,data_type='SLAC',**kwargs):
 			# loop through events and grab traces + triggers
 			for i in range(len(events)):
 				event = events[i]
-				if event['event']['TriggerType'] not in [1,3]: # entry doesn't have traces
+				if event['event']['TriggerType'] not in [1,2,3,4,5,6,7,8]: # entry doesn't have traces
 					continue
 				for det in detectors:
 					if f'Z{det}' not in event: # empty event
