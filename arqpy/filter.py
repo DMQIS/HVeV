@@ -813,9 +813,11 @@ class RQ:
 	def hist2d(self,key,key2,bins=None):
 		if bins is None:
 			xvals = self.results[key]
-			xbins = np.linspace(np.nanmin(xvals),np.nanmax(xvals),200)
+			#xbins = np.linspace(np.nanmin(xvals),np.nanmax(xvals),200)
+			xbins = np.linspace(0.8*np.nanpercentile(xvals,5),1.2*np.nanpercentile(xvals,95),200)
 			yvals = self.results[key2]
-			ybins = np.linspace(np.nanmin(yvals),np.nanmax(yvals),200)
+			#ybins = np.linspace(np.nanmin(yvals),np.nanmax(yvals),200)
+			ybins = np.linspace(0.8*np.nanpercentile(yvals,5),1.2*np.nanpercentile(yvals,95),200)
 			bins = [xbins,ybins]
 		plt.hist2d(self.results[key],self.results[key2],bins=bins,norm=LogNorm())
 		plt.xlabel(key)

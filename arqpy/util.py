@@ -226,7 +226,7 @@ def sqrtpsd(t,trace):
 
 
 # Low-pass filter (Butterworth)
-def lpf(trace, fcut, forder, fs=DCRCfreq, forward_backward=True):
+def lpf(trace, fcut, forder=10, fs=DCRCfreq, forward_backward=True):
 	if forward_backward:
 		forder = int(forder/2)
 		sos = scipy.signal.butter(forder, fcut, 'low', fs=fs, output='sos')
@@ -304,6 +304,7 @@ def loadEvents(files=None,event_nums=None,data_type='SLAC',**kwargs):
 				event = events[i]
 				if event['event']['TriggerType'] not in [1,2,3,4,5,6,7,8]: # entry doesn't have traces
 					continue
+				not_empty = False
 				for det in detectors:
 					if f'Z{det}' not in event: # empty event
 						continue
@@ -312,17 +313,22 @@ def loadEvents(files=None,event_nums=None,data_type='SLAC',**kwargs):
 						# invert + convert to float
 						trace = -(np.array(rawtrace,dtype=float)-32768) * ADC2A / pgagains[det][MIDASchs.index(ch)]
 						traces[det][ch].append(trace)
-				if loadtrig:
+						not_empty = True
+				if loadtrig and not_empty:
 					t0 = event['trigger']['TriggerTime']
-					nev = i + 1
 					triggers = []
+					nev = i - 1
+					trace_length = len(trace)/DCRCfreq
+					break_next = False
 					while nev < len(events):
+						trigtime = events[nev]['trigger']['TriggerTime'] - t0
 						if events[nev]['event']['TriggerType'] == 16: # LED trigger
-							trigtime = events[nev]['trigger']['TriggerTime'] - t0
 							triggers.append(trigtime)
-							nev = nev + 1
-						else:
+						if break_next:
 							break
+						if trigtime > trace_length:
+							break_next = True
+						nev = nev + 1
 					traces['triggers'].append(triggers)
 		return traces
 	else:
